@@ -62,7 +62,8 @@ namespace
 			"  --seconds audio seconds to render after boot (default 3)\n"
 			"  --out34   capture outputs 3/4 instead of 1/2\n"
 			"  --fold34  point 2Output modules that use outputs 3/4 at 1/2 before uploading (must precede --pch)\n"
-			"  --pch <sec>:<file> loads a Clavia .pch patch (3.0 or 2.10) and uploads it via the PC port\n"
+			"  --pch <sec>:<file> loads a Clavia .pch patch (3.0, 2.10, 1.10) and uploads it via the PC port\n"
+			"  --pch-spacing <sec> ACK timeout between upload packets (default 1)\n"
 			"  sysex files are sent to the PC port like the editor does, notes go to MIDI IN\n");
 	}
 
@@ -87,10 +88,13 @@ int main(int _argc, char** _argv)
 	std::vector<uint32_t> dspSlots;
 	double seconds = 3.0;
 	double traceFrom = -1.0;
+	double pchSpacing = 1.0;	// timeout for a packet's ACK before the next one is sent anyway
 	bool history = false, midiDump = false, profile = false, out34 = false, fold34 = false;
 
 	// scheduled MIDI: (sample frame, bytes)
 	std::vector<std::pair<uint64_t, std::vector<uint8_t>>> midiSchedule;
+	struct Upload { uint64_t startAt; std::vector<std::vector<uint8_t>> frames; size_t next; uint64_t sentAt; };
+	std::vector<Upload> uploads;
 	std::vector<std::pair<uint32_t,uint8_t>> panelInputs;
 	std::vector<std::pair<uint32_t,uint8_t>> knobs;
 
@@ -104,6 +108,7 @@ int main(int _argc, char** _argv)
 		if(a == "--os") osFile = next();
 		else if(a == "--boot") bootFile = next();
 		else if(a == "--flash") flashFile = next();
+		else if(a == "--pch-spacing") pchSpacing = std::stod(next());
 		else if(a == "--dsp") dspSlots.push_back(static_cast<uint32_t>(std::stoul(next(), nullptr, 0)));
 		else if(a == "--seconds") seconds = std::stod(next());
 		else if(a == "--history") history = true;
@@ -166,9 +171,10 @@ int main(int _argc, char** _argv)
 			size_t total = 0; for (const auto& f : frames) total += f.size();
 			std::printf("pch: '%s' %zu poly + %zu common modules, %zu + %zu cables, %zu voices -> %zu packets, %zu bytes\n", patch.name.c_str(),
 				patch.area(1).modules.size(), patch.area(0).modules.size(), patch.area(1).cables.size(), patch.area(0).cables.size(), static_cast<size_t>(patch.header.voices), frames.size(), total);
+			// the packets are sent one at a time, each after the ACK of the previous one (like the
+			// editors do: the OS drops packets that arrive while it is still busy with the last one)
 			midiSchedule.emplace_back(at, nmm::PatchSysex::iAm());
-			for(size_t k=0; k<frames.size(); ++k)
-				midiSchedule.emplace_back(at + nmm::g_samplerate / 10 + k * (nmm::g_samplerate / 10), frames[k]);
+			uploads.push_back({at + nmm::g_samplerate / 10, frames, 0, 0});
 		}
 		else if(a == "--press")
 		{
@@ -254,6 +260,8 @@ int main(int _argc, char** _argv)
 	const auto totalFrames = static_cast<uint64_t>(seconds * nmm::g_samplerate);
 
 	std::vector<std::vector<int32_t>> capture(2);
+	std::vector<uint8_t> pcMsg;
+	uint32_t replyIAm = 0, replyAck = 0, replyInfo = 0, replyOther = 0, ackBase = 0;
 	int32_t rawPeak24 = 0; uint64_t rawWide = 0;
 	std::vector<float> outL(blockSize), outR(blockSize);
 	synthLib::TAudioInputs ins{};
@@ -297,6 +305,27 @@ int main(int _argc, char** _argv)
 			midiSchedule.erase(midiSchedule.begin());
 		}
 
+		// ACK driven patch uploads: next packet once the previous one was acknowledged, or after a timeout
+		for (auto& u : uploads)
+		{
+			if(u.next >= u.frames.size() || frame < u.startAt)
+				continue;
+			const bool first = u.next == 0;
+			const bool acked = replyAck >= ackBase + u.next;
+			const bool timeout = !first && frame - u.sentAt > static_cast<uint64_t>(pchSpacing * nmm::g_samplerate);
+			if(first || acked || timeout)
+			{
+				if(timeout) std::printf("upload: no ACK for packet %zu within %.1f s, sending the next one anyway\n", u.next, pchSpacing);
+				synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host);
+				ev.offset = static_cast<uint32_t>(frame);
+				ev.sysex.assign(u.frames[u.next].begin(), u.frames[u.next].end());
+				hw.sendMidi(ev);
+				if(first) ackBase = replyAck;
+				++u.next;
+				u.sentAt = frame;
+			}
+		}
+
 		hw.processAudio(ins, outs, blockSize, 0);
 		frame += blockSize;
 
@@ -314,10 +343,21 @@ int main(int _argc, char** _argv)
 			}
 		}
 
-		if(midiDump)
 		{
 			std::vector<uint8_t> midiOut, pcOut;
 			hw.readMidiOut(midiOut, pcOut);
+			for (const auto b : pcOut)
+			{
+				// count the synth's replies by command: F0 33 [0:1 cc:5 slot:2] 06 ...
+				if(b == 0xf0) { pcMsg.clear(); }
+				pcMsg.push_back(b);
+				if(b == 0xf7 && pcMsg.size() >= 4 && pcMsg[0] == 0xf0 && pcMsg[1] == 0x33)
+				{
+					const auto cc = (pcMsg[2] >> 2) & 0x1f;
+					if(cc == 0x00) ++replyIAm; else if(cc == 0x16) ++replyAck; else if(cc == 0x14) ++replyInfo; else ++replyOther;
+				}
+			}
+			if(!midiDump) { midiOut.clear(); pcOut.clear(); }
 			if(!midiOut.empty())
 			{
 				std::printf("MIDI out @%.3fs:", static_cast<double>(frame) / nmm::g_samplerate);
@@ -348,6 +388,7 @@ int main(int _argc, char** _argv)
 		seconds, static_cast<long long>(ms), seconds * 1000.0 / std::max<double>(1.0, static_cast<double>(ms)),
 		static_cast<unsigned long long>(uc.getInstructionCount()), static_cast<unsigned long long>(uc.getCycles()), uc.getPC());
 
+	std::printf("pc port replies: iam=%u ack=%u info=%u other=%u\n", replyIAm, replyAck, replyInfo, replyOther);
 	std::printf("sr=$%04x irqs=%llu sci tx writes=%llu\n", uc.getSR(), static_cast<unsigned long long>(uc.getIrqCount()), static_cast<unsigned long long>(uc.getSciTxWrites()));
 
 	std::printf("host port slot access counts:");

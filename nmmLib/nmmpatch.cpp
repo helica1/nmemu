@@ -41,23 +41,30 @@ namespace nmm
 
 		std::vector<std::string> splitLines(const std::string& _text)
 		{
+			// LF, CR LF and CR-only files all occur in the wild
 			std::vector<std::string> lines;
 			std::string cur;
-			for (const char c : _text)
+			for(size_t i=0; i<_text.size(); ++i)
 			{
-				if(c == '\n') { lines.push_back(cur); cur.clear(); }
-				else if(c != '\r') cur += c;
+				const char c = _text[i];
+				if(c == '\n' || c == '\r')
+				{
+					lines.push_back(cur); cur.clear();
+					if(c == '\r' && i + 1 < _text.size() && _text[i+1] == '\n') ++i;
+				}
+				else cur += c;
 			}
 			if(!cur.empty()) lines.push_back(cur);
 			return lines;
 		}
 
+		// the pre-3.0 text formats (1.10, 2.10) share the [Module n] layout
 		bool isLegacy210(const std::vector<std::string>& _lines)
 		{
 			for(size_t i=0; i<_lines.size() && i<12; ++i)
 			{
 				const auto l = lower(trim(_lines[i]));
-				if(l.rfind("version=", 0) == 0 && l.find("nord modular patch 2.10") != std::string::npos)
+				if(l.rfind("version=", 0) == 0 && l.find("nord modular patch") != std::string::npos && l.find("3.0") == std::string::npos)
 					return true;
 			}
 			return false;
@@ -218,14 +225,25 @@ namespace nmm
 				++i;
 				if(lower(l) == closeTag)
 					break;
-				body.push_back(l);
+				if(!l.empty())	// files with doubled line endings have blank lines everywhere
+					body.push_back(l);
 			}
 
-			auto areaOf = [&](const std::vector<std::string>& _b) -> PatchArea*
+			// Area sections start with the area id on a line of its own. Some editors wrote the
+			// first entry on that same line ("1 1 1 0 0" = area 1, module 1 of type 1 at 0/0), so
+			// split it off into an entry line of its own.
+			auto areaOf = [&](std::vector<std::string>& _b) -> PatchArea*
 			{
 				if(_b.empty()) return nullptr;
 				const auto t = tokenize(_b[0]);
 				if(t.empty()) return nullptr;
+				if(t.size() > 1)
+				{
+					std::string rest;
+					for(size_t k=1; k<t.size(); ++k) rest += (k > 1 ? " " : "") + t[k];
+					_b[0] = t[0];
+					_b.insert(_b.begin() + 1, rest);
+				}
 				return &_patch.area(toInt(t[0]) == 1 ? 1 : 0);
 			};
 
@@ -383,8 +401,9 @@ namespace nmm
 			else if(section == "customdump")
 			{
 				if(body.empty()) continue;
-				const auto first = tokenize(body[0]);
-				const int sec = first.empty() ? 1 : (toInt(first[0]) == 1 ? 1 : 0);
+				const auto* areaPtr = areaOf(body);
+				if(!areaPtr) continue;
+				const int sec = areaPtr == &_patch.area(1) ? 1 : 0;
 				for(size_t k=1; k<body.size(); ++k)
 				{
 					const auto t = tokenize(body[k]);
@@ -516,6 +535,7 @@ namespace nmm
 					if(v.empty()) continue;
 					int pv = toInt(v);
 					if(pd.flags & 1) pv = std::max(0, pv - 1);	// output destinations are 1-based in 2.10
+					if(pd.flags & 2) pv = pv ? 0 : 1;			// the mute switches were "on" switches in 2.10: 1 = audible
 					m.params[p] = std::max(pd.minValue, std::min(pd.maxValue, pv));
 				}
 				for (const auto& l : body)

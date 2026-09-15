@@ -11,7 +11,7 @@ namespace nmm
 {
 	namespace
 	{
-		constexpr double g_packetSpacingSeconds = 0.05;
+		constexpr double g_ackTimeoutSeconds = 1.0;
 		constexpr double g_iAmRetrySeconds = 2.0;
 		constexpr int g_iAmMaxRetries = 10;
 	}
@@ -314,10 +314,12 @@ namespace nmm
 			}
 			break;
 		case PatchUpload::State::Sending:
-			if(now >= u.nextSendSample && u.next < u.frames.size())
+			// one packet at a time: the next one goes out once the synth acknowledged the previous
+			// one (the OS drops packets that arrive while it is still busy), or after a timeout
+			if(u.next < u.frames.size() && (u.next == 0 || u.acks >= static_cast<int>(u.next) || now >= u.nextSendSample))
 			{
 				send(u.frames[u.next++]);
-				u.nextSendSample = now + g_packetSpacingSeconds * m_hostSamplerate;
+				u.nextSendSample = now + g_ackTimeoutSeconds * m_hostSamplerate;
 				if(u.next >= u.frames.size())
 					u.state = PatchUpload::State::Done;
 			}
