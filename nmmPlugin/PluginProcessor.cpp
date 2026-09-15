@@ -26,6 +26,9 @@ namespace nmm
 
 	AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 	{
+		m_editorWindowForAudio.store(nullptr);
+		m_editorWindow.reset();
+		m_virtualMidi.reset();
 		m_plugin.reset();
 		m_device.reset();
 	}
@@ -60,6 +63,48 @@ namespace nmm
 		}
 
 		m_plugin.reset(new synthLib::Plugin(m_device.get(), [](synthLib::Device* _d) { return _d; }));
+
+		// the PC port as a pair of virtual MIDI ports for the Nord Modular editors
+		m_virtualMidi.reset(new VirtualMidi([this](const synthLib::SMidiEvent& _ev)
+		{
+			if(m_plugin)
+				m_plugin->addMidiEvent(_ev);
+		}));
+	}
+
+	void AudioPluginAudioProcessor::openEditorWindow()
+	{
+		if(m_editorWindow)
+		{
+			m_editorWindow->toFront(true);
+			return;
+		}
+		if(!m_plugin)
+			return;
+		auto* w = new EditorWindow("Nord Micro Modular (emulator)",
+			[this](const synthLib::SMidiEvent& _ev) { if(m_plugin) m_plugin->addMidiEvent(_ev); },
+			[this]() { closeEditorWindow(); });
+		m_editorWindow.reset(w);
+		m_editorWindowForAudio.store(w);
+	}
+
+	void AudioPluginAudioProcessor::closeEditorWindow()
+	{
+		// closing from within the window's own callback: defer the destruction
+		if(!m_editorWindow)
+			return;
+		m_editorWindowForAudio.store(nullptr);
+		auto* w = m_editorWindow.release();
+		juce::MessageManager::callAsync([w]() { delete w; });
+	}
+
+	std::string AudioPluginAudioProcessor::getEditorStatus() const
+	{
+		if(!EditorWindow::isAvailable())
+			return "editor not built in";
+		if(!m_editorWindow)
+			return "editor closed";
+		return m_editorWindow->getStatus();
 	}
 
 	std::string AudioPluginAudioProcessor::getStatusText() const
@@ -70,6 +115,10 @@ namespace nmm
 			s += "OS: " + m_osFile + "\n";
 			s += "Boot flash: " + (m_bootRomFile.empty() ? std::string("none (HLE boot)") : m_bootRomFile) + "\n";
 			s += "DSP clock: " + std::to_string(m_device->getDspClockHz() / 1000000) + " MHz, 96 kHz\n";
+			if(m_virtualMidi && m_virtualMidi->isValid())
+				s += "Virtual MIDI port: '" + m_virtualMidi->getName() + "', connect the Nord Modular editor (Animatek NME, nomad) to it\n";
+			else
+				s += "Virtual MIDI port: not available on this platform\n";
 		}
 		else
 		{
@@ -343,6 +392,11 @@ namespace nmm
 		m_plugin->getMidiOut(m_midiOut);
 		for (const auto& e : m_midiOut)
 		{
+			if(m_virtualMidi)
+				m_virtualMidi->send(e);
+			if(auto* w = m_editorWindowForAudio.load())
+				w->onSynthMidiOut(e);
+
 			if(!e.sysex.empty())
 			{
 				onMidiOut(e);

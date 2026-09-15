@@ -26,7 +26,10 @@ namespace nmm
 		std::array<juce::Label, 4> m_knobLabels;
 		juce::TextButton m_loadPatch{"Load patch (.pch)..."};
 		juce::TextButton m_loadSysex{"Send .syx to PC port..."};
+		juce::TextButton m_openEditor{"Open editor (Animatek NME)"};
+		juce::Label m_editorStatus;
 		std::unique_ptr<juce::FileChooser> m_chooser;
+		std::string m_lastEditorStatus;
 
 		JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioPluginAudioProcessorEditor)
 	};

@@ -1,0 +1,4 @@
+[submodule "3rdparty/Animatek-NME"]
+	path = 3rdparty/Animatek-NME
+	url = https://github.com/helica1/Animatek-NME.git
+	branch = nmemu-host

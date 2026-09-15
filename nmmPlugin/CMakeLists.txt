@@ -34,6 +34,8 @@ set(SOURCES
 	PluginProcessor.cpp PluginProcessor.h
 	PluginEditor.cpp PluginEditor.h
 	RomFinder.cpp RomFinder.h
+	VirtualMidi.cpp VirtualMidi.h
+	EditorWindow.cpp EditorWindow.h
 )
 
 target_sources(nmmPlugin PRIVATE ${SOURCES})
@@ -49,11 +51,19 @@ target_compile_definitions(nmmPlugin PUBLIC
 	JUCE_USE_FLAC=0
 )
 
+if(NMEMU_EDITOR)
+	target_compile_definitions(nmmPlugin PRIVATE NMM_EMBEDDED_EDITOR=1)
+	target_link_libraries(nmmPlugin PRIVATE nmmEditor)
+else()
+	target_compile_definitions(nmmPlugin PRIVATE NMM_EMBEDDED_EDITOR=0)
+endif()
+
 target_link_libraries(nmmPlugin
 	PRIVATE
 		nmmLib
 		synthLib
 		juce::juce_audio_utils
+		juce::juce_audio_devices
 		juce::juce_audio_processors
 	PUBLIC
 		juce::juce_recommended_config_flags

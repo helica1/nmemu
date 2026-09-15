@@ -13,6 +13,8 @@
 
 #include "nmmLib/nmmdevice.h"
 #include "nmmLib/nmmpatch.h"
+#include "VirtualMidi.h"
+#include "EditorWindow.h"
 
 namespace nmm
 {
@@ -58,6 +60,13 @@ namespace nmm
 		bool loadPatchText(const std::string& _text, const std::string& _name, std::string& _error);
 		std::string getPatchName() const;
 		std::string getPatchStatus() const;
+		// the embedded Animatek NME editor window, message thread only
+		void openEditorWindow();
+		void closeEditorWindow();
+		bool isEditorWindowOpen() const { return m_editorWindow != nullptr; }
+		std::string getEditorStatus() const;
+
+		std::string getVirtualMidiName() const { return m_virtualMidi && m_virtualMidi->isValid() ? m_virtualMidi->getName() : std::string(); }
 
 	private:
 		void createDevice();
@@ -66,6 +75,9 @@ namespace nmm
 
 		std::unique_ptr<Device> m_device;
 		std::unique_ptr<synthLib::Plugin> m_plugin;
+		std::unique_ptr<VirtualMidi> m_virtualMidi;
+		std::unique_ptr<EditorWindow> m_editorWindow;
+		std::atomic<EditorWindow*> m_editorWindowForAudio{nullptr};	// what the audio thread may use
 
 		std::string m_osFile;
 		std::string m_bootRomFile;

@@ -1,5 +1,9 @@
 #include "PluginEditor.h"
 
+#include <cstdlib>
+
+#include "nmmLib/nmmlog.h"
+
 namespace nmm
 {
 	AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor& _p)
@@ -59,10 +63,20 @@ namespace nmm
 		};
 		addAndMakeVisible(m_loadSysex);
 
+		m_openEditor.onClick = [this]() { m_processor.openEditorWindow(); };
+		m_openEditor.setEnabled(EditorWindow::isAvailable());
+		addAndMakeVisible(m_openEditor);
+		m_editorStatus.setFont(juce::Font(12.0f));
+		addAndMakeVisible(m_editorStatus);
+
 		timerCallback();
 		startTimerHz(4);
 
-		setSize(600, 340);
+		// test aid: NMEMU_OPEN_EDITOR=1 opens the patch editor window right away
+		if(std::getenv("NMEMU_OPEN_EDITOR"))
+			juce::MessageManager::callAsync([this]() { m_processor.openEditorWindow(); });
+
+		setSize(620, 380);
 	}
 
 	void AudioPluginAudioProcessorEditor::timerCallback()
@@ -70,6 +84,13 @@ namespace nmm
 		const auto name = m_processor.getPatchName();
 		const auto status = m_processor.getPatchStatus();
 		m_patchLabel.setText(name.empty() ? juce::String(status) : juce::String("Patch: " + name + "  -  " + status), juce::dontSendNotification);
+		const auto editorStatus = m_processor.getEditorStatus();
+		if(editorStatus != m_lastEditorStatus)
+		{
+			m_lastEditorStatus = editorStatus;
+			NMMLOG("editor status: %s", editorStatus.c_str());
+		}
+		m_editorStatus.setText("Editor: " + juce::String(editorStatus), juce::dontSendNotification);
 	}
 
 	void AudioPluginAudioProcessorEditor::paint(juce::Graphics& g)
@@ -99,6 +120,11 @@ namespace nmm
 		m_loadPatch.setBounds(buttons.removeFromLeft(200));
 		buttons.removeFromLeft(8);
 		m_loadSysex.setBounds(buttons.removeFromLeft(200));
+		area.removeFromTop(6);
+		auto row2 = area.removeFromTop(28);
+		m_openEditor.setBounds(row2.removeFromLeft(220));
+		row2.removeFromLeft(8);
+		m_editorStatus.setBounds(row2);
 		area.removeFromTop(6);
 		m_patchLabel.setBounds(area.removeFromTop(24));
 		area.removeFromTop(8);
