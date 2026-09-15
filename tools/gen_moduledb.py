@@ -43,7 +43,9 @@ def main():
             df = int(p.get('defaultValue', '0'))
             if cls == 'parameter':
                 bits = 7 if (idx == 97 and pidx == 2) else max(mx, 1).bit_length()   # MasterOsc kbt: 7 bits on the wire
-                flags = (1 if 'out,assign' in p.get('role', '') else 0) | (2 if p.get('role', '') == 'mute' else 0)   # 1: 2.10 stores output destinations 1-based, 2: mute, inverted in 2.10
+                pname = p.get('name', '').lower()
+                onebased = pname in ('waveform', 'filter type', 'slope', 'partials')   # selectors that 2.10 stored 1-based (statistics over the patch archive)
+                flags = (1 if 'out,assign' in p.get('role', '') else 0) | (2 if p.get('role', '') == 'mute' else 0) | (4 if onebased else 0)   # 1: 2.10 stores output destinations 1-based, 2: mute, inverted in 2.10, 4: selector 1-based in 2.10
                 params.append((pidx, mn, mx, df, bits, flags, p.get('name')))
             elif cls == 'custom':
                 customs.append((pidx, mn, mx, df, p.get('name')))

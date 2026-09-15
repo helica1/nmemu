@@ -534,7 +534,7 @@ namespace nmm
 					const auto v = value(body, "P" + std::to_string(pd.index));
 					if(v.empty()) continue;
 					int pv = toInt(v);
-					if(pd.flags & 1) pv = std::max(0, pv - 1);	// output destinations are 1-based in 2.10
+					if(pd.flags & 5) pv = std::max(0, pv - 1);	// output destinations and some selectors are 1-based in 2.10
 					if(pd.flags & 2) pv = pv ? 0 : 1;			// the mute switches were "on" switches in 2.10: 1 = audible
 					m.params[p] = std::max(pd.minValue, std::min(pd.maxValue, pv));
 				}

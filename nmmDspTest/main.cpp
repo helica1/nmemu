@@ -11,11 +11,14 @@
 #include "dsp56kEmu/peripherals.h"
 
 int runDiff(int argc, char** argv);
+int runDisasm(int argc, char** argv);
 
 int main(int argc, char** argv)
 {
 	if(argc > 1 && std::string(argv[1]) == "diff")
 		return runDiff(argc, argv);
+	if(argc > 1 && std::string(argv[1]) == "disasm")
+		return runDisasm(argc, argv);
 
 	dsp56k::DefaultMemoryValidator validator;
 	dsp56k::Memory mem(validator, 0x4000, 0x4000, 0x800);

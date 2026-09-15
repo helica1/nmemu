@@ -13,7 +13,7 @@ namespace nmm
 		int maxValue;
 		int defaultValue;
 		int bits;			// width in the ParameterDump bit stream
-		int flags;			// 1 = output destination selector (stored 1-based in 2.10 files), 2 = mute switch (inverted in 2.10 files)
+		int flags;			// 1 = output destination selector (stored 1-based in 2.10 files), 2 = mute switch (inverted in 2.10 files), 4 = selector stored 1-based in 2.10 files
 	};
 
 	struct ConnDesc

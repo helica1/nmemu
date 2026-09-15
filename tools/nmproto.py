@@ -98,8 +98,11 @@ def decode_packet(msg):
     return f"cc={cc:#x} slot={slot} payload={[hex(b) for b in payload]}"
 
 def reassemble(logfile):
+    return reassemble_text(open(logfile, errors="replace").read())
+
+def reassemble_text(text):
     stream = bytearray()
-    for line in open(logfile, errors="replace"):
+    for line in text.splitlines():
         m = re.match(r"PC   out @([0-9.]+)s?:((?: [0-9a-f]{2})+)", line)
         if m:
             stream += bytes(int(x, 16) for x in m.group(2).split())

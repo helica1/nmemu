@@ -34,7 +34,9 @@ namespace nmm
 		, m_boot(m_dsp)
 	{
 		auto& clock = m_periphX.getEssiClock();
-		clock.setExternalClockFrequency(g_dspExtalHz);
+		// NMM_DSP_CLOCK_SCALE=1.5 gives the emulated DSP 50% more cycles per sample (experiments)
+		const auto clockScale = std::getenv("NMM_DSP_CLOCK_SCALE") ? std::atof(std::getenv("NMM_DSP_CLOCK_SCALE")) : 1.0;
+		clock.setExternalClockFrequency(static_cast<uint32_t>(g_dspExtalHz * (clockScale > 0.1 ? clockScale : 1.0)));
 		clock.setSamplerate(g_samplerate);
 		clock.setClockSource(dsp56k::EsxiClock::ClockSource::Cycles);
 

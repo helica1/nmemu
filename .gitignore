@@ -8,3 +8,4 @@ syx_poly/
 *.log
 build_interp/
 build*/
+__pycache__/

@@ -64,6 +64,7 @@ namespace
 			"  --fold34  point 2Output modules that use outputs 3/4 at 1/2 before uploading (must precede --pch)\n"
 			"  --pch <sec>:<file> loads a Clavia .pch patch (3.0, 2.10, 1.10) and uploads it via the PC port\n"
 			"  --pch-spacing <sec> ACK timeout between upload packets (default 1)\n"
+			"  --midi-clock <bpm> send MIDI start and clock ticks on MIDI IN from 0.5 s on\n"
 			"  sysex files are sent to the PC port like the editor does, notes go to MIDI IN\n");
 	}
 
@@ -89,6 +90,7 @@ int main(int _argc, char** _argv)
 	double seconds = 3.0;
 	double traceFrom = -1.0;
 	double pchSpacing = 1.0;	// timeout for a packet's ACK before the next one is sent anyway
+	double midiClockBpm = 0;	// > 0: send MIDI start + clock on MIDI IN
 	bool history = false, midiDump = false, profile = false, out34 = false, fold34 = false;
 
 	// scheduled MIDI: (sample frame, bytes)
@@ -109,6 +111,7 @@ int main(int _argc, char** _argv)
 		else if(a == "--boot") bootFile = next();
 		else if(a == "--flash") flashFile = next();
 		else if(a == "--pch-spacing") pchSpacing = std::stod(next());
+		else if(a == "--midi-clock") midiClockBpm = std::stod(next());
 		else if(a == "--dsp") dspSlots.push_back(static_cast<uint32_t>(std::stoul(next(), nullptr, 0)));
 		else if(a == "--seconds") seconds = std::stod(next());
 		else if(a == "--history") history = true;
@@ -262,6 +265,7 @@ int main(int _argc, char** _argv)
 	std::vector<std::vector<int32_t>> capture(2);
 	std::vector<uint8_t> pcMsg;
 	uint32_t replyIAm = 0, replyAck = 0, replyInfo = 0, replyOther = 0, ackBase = 0;
+	bool clockStarted = false; uint64_t nextTick = 0;
 	int32_t rawPeak24 = 0; uint64_t rawWide = 0;
 	std::vector<float> outL(blockSize), outR(blockSize);
 	synthLib::TAudioInputs ins{};
@@ -323,6 +327,23 @@ int main(int _argc, char** _argv)
 				if(first) ackBase = replyAck;
 				++u.next;
 				u.sentAt = frame;
+			}
+		}
+
+		if(midiClockBpm > 0)
+		{
+			const auto tick = static_cast<uint64_t>(60.0 / (midiClockBpm * 24.0) * nmm::g_samplerate);
+			const uint64_t startAt = nmm::g_samplerate / 2;
+			if(frame >= startAt && !clockStarted)
+			{
+				clockStarted = true;
+				synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host); ev.a = 0xfa; ev.offset = static_cast<uint32_t>(frame); hw.sendMidi(ev);
+				nextTick = frame;
+			}
+			while(clockStarted && nextTick < frame + blockSize)
+			{
+				synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host); ev.a = 0xf8; ev.offset = static_cast<uint32_t>(nextTick); hw.sendMidi(ev);
+				nextTick += tick;
 			}
 		}
 
