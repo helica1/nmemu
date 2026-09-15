@@ -76,5 +76,8 @@ namespace nmm
 		uint64_t m_wordsToHost = 0;
 		uint64_t m_isrPolls = 0;
 		uint8_t m_lastHf23 = 0;
+		bool m_lastHf0 = false;
+		uint32_t m_hf0ClearCount = 0;
+		bool m_prevHf0Level = false;
 	};
 }

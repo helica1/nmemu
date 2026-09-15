@@ -5,3 +5,6 @@ build/
 *.bin.y.txt
 syx/
 syx_poly/
+*.log
+build_interp/
+build*/

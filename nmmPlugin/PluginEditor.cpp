@@ -10,6 +10,10 @@ namespace nmm
 		m_status.setFont(juce::Font(12.0f));
 		addAndMakeVisible(m_status);
 
+		m_patchLabel.setJustificationType(juce::Justification::centredLeft);
+		m_patchLabel.setFont(juce::Font(14.0f));
+		addAndMakeVisible(m_patchLabel);
+
 		static const char* names[4] = {"Master Level", "Knob 1", "Knob 2", "Knob 3"};
 
 		for(uint32_t i=0; i<4; ++i)
@@ -27,6 +31,22 @@ namespace nmm
 			addAndMakeVisible(m_knobLabels[i]);
 		}
 
+		m_loadPatch.onClick = [this]()
+		{
+			m_chooser = std::make_unique<juce::FileChooser>("Select a Nord Modular patch", juce::File(), "*.pch");
+			m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& _fc)
+			{
+				const auto f = _fc.getResult();
+				if(!f.existsAsFile())
+					return;
+				std::string err;
+				if(!m_processor.loadPatchFile(f, err))
+					m_patchLabel.setText("Failed to load patch: " + err, juce::dontSendNotification);
+				timerCallback();
+			});
+		};
+		addAndMakeVisible(m_loadPatch);
+
 		m_loadSysex.onClick = [this]()
 		{
 			m_chooser = std::make_unique<juce::FileChooser>("Select a .syx file", juce::File(), "*.syx");
@@ -39,7 +59,17 @@ namespace nmm
 		};
 		addAndMakeVisible(m_loadSysex);
 
-		setSize(560, 300);
+		timerCallback();
+		startTimerHz(4);
+
+		setSize(600, 340);
+	}
+
+	void AudioPluginAudioProcessorEditor::timerCallback()
+	{
+		const auto name = m_processor.getPatchName();
+		const auto status = m_processor.getPatchStatus();
+		m_patchLabel.setText(name.empty() ? juce::String(status) : juce::String("Patch: " + name + "  -  " + status), juce::dontSendNotification);
 	}
 
 	void AudioPluginAudioProcessorEditor::paint(juce::Graphics& g)
@@ -65,7 +95,12 @@ namespace nmm
 		}
 
 		area.removeFromTop(8);
-		m_loadSysex.setBounds(area.removeFromTop(28).removeFromLeft(220));
+		auto buttons = area.removeFromTop(28);
+		m_loadPatch.setBounds(buttons.removeFromLeft(200));
+		buttons.removeFromLeft(8);
+		m_loadSysex.setBounds(buttons.removeFromLeft(200));
+		area.removeFromTop(6);
+		m_patchLabel.setBounds(area.removeFromTop(24));
 		area.removeFromTop(8);
 		m_status.setBounds(area);
 	}

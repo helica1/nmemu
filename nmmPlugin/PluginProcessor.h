@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,6 +12,7 @@
 #include "synthLib/plugin.h"
 
 #include "nmmLib/nmmdevice.h"
+#include "nmmLib/nmmpatch.h"
 
 namespace nmm
 {
@@ -50,8 +53,16 @@ namespace nmm
 		void sendSysexFile(const juce::File& _file);
 		void sendSysex(const std::vector<uint8_t>& _bytes);
 
+		// patches
+		bool loadPatchFile(const juce::File& _file, std::string& _error);
+		bool loadPatchText(const std::string& _text, const std::string& _name, std::string& _error);
+		std::string getPatchName() const;
+		std::string getPatchStatus() const;
+
 	private:
 		void createDevice();
+		void servicePatchUpload(int _numHostSamples);
+		void onMidiOut(const synthLib::SMidiEvent& _ev);
 
 		std::unique_ptr<Device> m_device;
 		std::unique_ptr<synthLib::Plugin> m_plugin;
@@ -64,6 +75,29 @@ namespace nmm
 		std::array<uint8_t, 4> m_knobs{0xff, 0xff, 0xff, 0xff};
 
 		std::vector<synthLib::SMidiEvent> m_midiOut;
+
+		// The patch upload follows the editor: send "I am", wait for the synth's reply (which only
+		// arrives once its OS has finished booting), then send the packets with a little spacing.
+		struct PatchUpload
+		{
+			enum class State { Idle, WaitIAm, Sending, Done, Failed };
+			State state = State::Idle;
+			std::vector<std::vector<uint8_t>> frames;
+			size_t next = 0;
+			double nextSendSample = 0;
+			double retrySample = 0;
+			int retries = 0;
+			int acks = 0;
+		};
+		mutable std::mutex m_patchMutex;
+		PatchUpload m_upload;
+		Patch m_patch;
+		std::string m_patchText;
+		std::string m_patchName;
+		std::string m_patchFile;
+		bool m_hasPatch = false;
+		double m_hostSamplesProcessed = 0;
+		double m_hostSamplerate = 48000.0;
 
 		JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioPluginAudioProcessor)
 	};

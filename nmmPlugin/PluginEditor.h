@@ -6,7 +6,7 @@
 
 namespace nmm
 {
-	class AudioPluginAudioProcessorEditor : public juce::AudioProcessorEditor
+	class AudioPluginAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
 	{
 	public:
 		explicit AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor&);
@@ -16,11 +16,15 @@ namespace nmm
 		void resized() override;
 
 	private:
+		void timerCallback() override;
+
 		AudioPluginAudioProcessor& m_processor;
 
 		juce::Label m_status;
+		juce::Label m_patchLabel;
 		std::array<juce::Slider, 4> m_knobs;
 		std::array<juce::Label, 4> m_knobLabels;
+		juce::TextButton m_loadPatch{"Load patch (.pch)..."};
 		juce::TextButton m_loadSysex{"Send .syx to PC port..."};
 		std::unique_ptr<juce::FileChooser> m_chooser;
 

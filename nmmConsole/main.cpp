@@ -10,6 +10,7 @@
 #include "nmmLib/nmmhardware.h"
 #include "nmmLib/nmmromloader.h"
 #include "nmmLib/nmmlog.h"
+#include "nmmLib/nmmpatch.h"
 
 namespace
 {
@@ -58,6 +59,7 @@ namespace
 			"  --boot    512K boot flash dump; without it the OS is started directly in RAM\n"
 			"  --dsp     attach a DSP56303 to host port slot n (repeatable, Micro Modular: 0)\n"
 			"  --seconds audio seconds to render after boot (default 3)\n"
+			"  --pch <sec>:<file> loads a Clavia .pch patch (3.0 or 2.10) and uploads it via the PC port\n"
 			"  sysex files are sent to the PC port like the editor does, notes go to MIDI IN\n");
 	}
 
@@ -142,6 +144,24 @@ int main(int _argc, char** _argv)
 			auto bytes = readFile(file);
 			if(bytes.empty()) { std::printf("failed to read %s\n", file.c_str()); return 1; }
 			midiSchedule.emplace_back(at, std::move(bytes));
+		}
+		else if(a == "--pch")
+		{
+			// --pch <sec>:<file>  loads a .pch patch file and schedules the IAm + upload messages
+			const auto s = next();
+			const auto colon = s.find(':');
+			const auto at = toFrames(s.substr(0, colon));
+			const auto file = s.substr(colon + 1);
+			nmm::Patch patch;
+			std::string err;
+			if(!nmm::PchFile::load(file, patch, err)) { std::printf("failed to load %s: %s\n", file.c_str(), err.c_str()); return 1; }
+			const auto frames = nmm::PatchSysex::upload(patch, 0);
+			size_t total = 0; for (const auto& f : frames) total += f.size();
+			std::printf("pch: '%s' %zu poly + %zu common modules, %zu + %zu cables, %zu voices -> %zu packets, %zu bytes\n", patch.name.c_str(),
+				patch.area(1).modules.size(), patch.area(0).modules.size(), patch.area(1).cables.size(), patch.area(0).cables.size(), static_cast<size_t>(patch.header.voices), frames.size(), total);
+			midiSchedule.emplace_back(at, nmm::PatchSysex::iAm());
+			for(size_t k=0; k<frames.size(); ++k)
+				midiSchedule.emplace_back(at + nmm::g_samplerate / 10 + k * (nmm::g_samplerate / 10), frames[k]);
 		}
 		else if(a == "--press")
 		{

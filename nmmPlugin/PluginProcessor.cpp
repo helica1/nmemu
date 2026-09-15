@@ -9,6 +9,13 @@
 
 namespace nmm
 {
+	namespace
+	{
+		constexpr double g_packetSpacingSeconds = 0.05;
+		constexpr double g_iAmRetrySeconds = 2.0;
+		constexpr int g_iAmMaxRetries = 10;
+	}
+
 	AudioPluginAudioProcessor::AudioPluginAudioProcessor()
 		: AudioProcessor(BusesProperties()
 			.withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -111,8 +118,141 @@ namespace nmm
 		}
 	}
 
+	// ---------------------------------------------------------------------------------------------
+	// patches
+	// ---------------------------------------------------------------------------------------------
+
+	bool AudioPluginAudioProcessor::loadPatchFile(const juce::File& _file, std::string& _error)
+	{
+		const auto text = _file.loadFileAsString().toStdString();
+		if(text.empty())
+		{
+			_error = "cannot read " + _file.getFullPathName().toStdString();
+			return false;
+		}
+		if(!loadPatchText(text, PchFile::nameFromFilename(_file.getFullPathName().toStdString()), _error))
+			return false;
+		std::lock_guard lock(m_patchMutex);
+		m_patchFile = _file.getFullPathName().toStdString();
+		return true;
+	}
+
+	bool AudioPluginAudioProcessor::loadPatchText(const std::string& _text, const std::string& _name, std::string& _error)
+	{
+		Patch patch;
+		if(!PchFile::parse(_text, patch, _error, _name))
+			return false;
+
+		auto frames = PatchSysex::upload(patch, 0);
+
+		std::lock_guard lock(m_patchMutex);
+		m_patch = patch;
+		m_patchText = _text;
+		m_patchName = patch.name;
+		m_patchFile.clear();
+		m_hasPatch = true;
+
+		m_upload = PatchUpload();
+		m_upload.frames = std::move(frames);
+		m_upload.state = m_plugin ? PatchUpload::State::WaitIAm : PatchUpload::State::Failed;
+		m_upload.retrySample = 0;	// send the first "I am" right away
+		return true;
+	}
+
+	std::string AudioPluginAudioProcessor::getPatchName() const
+	{
+		std::lock_guard lock(m_patchMutex);
+		return m_hasPatch ? m_patchName : std::string();
+	}
+
+	std::string AudioPluginAudioProcessor::getPatchStatus() const
+	{
+		std::lock_guard lock(m_patchMutex);
+		if(!m_hasPatch)
+			return "no patch loaded";
+		switch(m_upload.state)
+		{
+		case PatchUpload::State::Idle:		return "";
+		case PatchUpload::State::WaitIAm:	return "waiting for the synth (OS boot takes a few seconds)...";
+		case PatchUpload::State::Sending:	return "uploading packet " + std::to_string(m_upload.next) + "/" + std::to_string(m_upload.frames.size());
+		case PatchUpload::State::Done:		return "loaded, " + std::to_string(m_upload.acks) + " packets acknowledged";
+		case PatchUpload::State::Failed:	return "upload failed, the synth did not answer";
+		}
+		return {};
+	}
+
+	void AudioPluginAudioProcessor::onMidiOut(const synthLib::SMidiEvent& _ev)
+	{
+		if(_ev.sysex.size() < 5 || _ev.sysex[1] != 0x33)
+			return;
+
+		const auto cc = (_ev.sysex[2] >> 2) & 0x1f;
+
+		std::lock_guard lock(m_patchMutex);
+
+		if(cc == 0x00 && _ev.sysex.size() >= 5 && _ev.sysex[4] == 0x01 && m_upload.state == PatchUpload::State::WaitIAm)
+		{
+			// the synth introduced itself, it is ready for the upload
+			m_upload.state = PatchUpload::State::Sending;
+			m_upload.next = 0;
+			m_upload.nextSendSample = m_hostSamplesProcessed;
+		}
+		else if(cc == 0x16 && m_upload.state != PatchUpload::State::Idle)
+		{
+			++m_upload.acks;
+		}
+	}
+
+	void AudioPluginAudioProcessor::servicePatchUpload(const int _numHostSamples)
+	{
+		std::unique_lock lock(m_patchMutex, std::try_to_lock);
+		if(!lock.owns_lock())
+			return;
+
+		auto& u = m_upload;
+		const auto now = m_hostSamplesProcessed;
+
+		auto send = [&](const std::vector<uint8_t>& _frame)
+		{
+			synthLib::SMidiEvent ev(synthLib::MidiEventSource::Editor);
+			ev.sysex.assign(_frame.begin(), _frame.end());
+			m_plugin->addMidiEvent(ev);
+		};
+
+		switch(u.state)
+		{
+		case PatchUpload::State::WaitIAm:
+			if(now >= u.retrySample)
+			{
+				if(u.retries++ >= g_iAmMaxRetries)
+				{
+					u.state = PatchUpload::State::Failed;
+					break;
+				}
+				send(PatchSysex::iAm());
+				u.retrySample = now + g_iAmRetrySeconds * m_hostSamplerate;
+			}
+			break;
+		case PatchUpload::State::Sending:
+			if(now >= u.nextSendSample && u.next < u.frames.size())
+			{
+				send(u.frames[u.next++]);
+				u.nextSendSample = now + g_packetSpacingSeconds * m_hostSamplerate;
+				if(u.next >= u.frames.size())
+					u.state = PatchUpload::State::Done;
+			}
+			break;
+		default:
+			break;
+		}
+		(void)_numHostSamples;
+	}
+
+	// ---------------------------------------------------------------------------------------------
+
 	void AudioPluginAudioProcessor::prepareToPlay(const double _sampleRate, const int _samplesPerBlock)
 	{
+		m_hostSamplerate = _sampleRate;
 		if(!m_plugin)
 			return;
 		m_plugin->setHostSamplerate(static_cast<float>(_sampleRate), 0.0f);
@@ -142,6 +282,8 @@ namespace nmm
 			_midiMessages.clear();
 			return;
 		}
+
+		servicePatchUpload(numSamples);
 
 		synthLib::TAudioInputs inputs{};
 		synthLib::TAudioOutputs outputs{};
@@ -190,13 +332,18 @@ namespace nmm
 
 		m_plugin->process(inputs, outputs, static_cast<size_t>(numSamples), bpm, ppqPos, isPlaying, hasPpqPosition);
 
+		m_hostSamplesProcessed += numSamples;
+
 		// MIDI OUT and PC port replies both go to the host's MIDI output
 		m_midiOut.clear();
 		m_plugin->getMidiOut(m_midiOut);
 		for (const auto& e : m_midiOut)
 		{
 			if(!e.sysex.empty())
+			{
+				onMidiOut(e);
 				_midiMessages.addEvent(juce::MidiMessage::createSysExMessage(e.sysex.data() + 1, static_cast<int>(e.sysex.size()) - 2), 0);
+			}
 			else
 			{
 				const auto len = synthLib::MidiBufferParser::lengthFromStatusByte(e.a);
@@ -214,10 +361,18 @@ namespace nmm
 
 	void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& _destData)
 	{
-		// knob positions only for now; patch state follows once .pch loading exists
 		juce::ValueTree v("nmm");
 		for(uint32_t i=0; i<4; ++i)
 			v.setProperty(juce::String("knob") + juce::String(i), static_cast<int>(m_knobs[i]), nullptr);
+		{
+			std::lock_guard lock(m_patchMutex);
+			if(m_hasPatch)
+			{
+				v.setProperty("patchName", juce::String(m_patchName), nullptr);
+				v.setProperty("patchFile", juce::String(m_patchFile), nullptr);
+				v.setProperty("patchText", juce::String(m_patchText), nullptr);
+			}
+		}
 		juce::MemoryOutputStream os(_destData, false);
 		v.writeToStream(os);
 	}
@@ -232,6 +387,15 @@ namespace nmm
 			const auto id = juce::String("knob") + juce::String(i);
 			if(v.hasProperty(id))
 				setKnob(i, static_cast<uint8_t>(static_cast<int>(v.getProperty(id))));
+		}
+		if(v.hasProperty("patchText"))
+		{
+			std::string err;
+			if(loadPatchText(v.getProperty("patchText").toString().toStdString(), v.getProperty("patchName").toString().toStdString(), err))
+			{
+				std::lock_guard lock(m_patchMutex);
+				m_patchFile = v.getProperty("patchFile").toString().toStdString();
+			}
 		}
 	}
 }

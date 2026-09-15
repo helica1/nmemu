@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 
 #include "nmmlog.h"
 
@@ -27,6 +29,13 @@ namespace nmm
 	Hardware::Hardware(const HardwareConfig& _config)
 		: m_samplerateInv(1.0 / g_samplerate)
 	{
+		if(const auto* t = std::getenv("NMM_DSPTRACE_AT"))
+		{
+			m_dspTraceAtFrame = static_cast<uint64_t>(std::atof(t) * g_samplerate);
+			const auto* colon = std::strchr(t, ':');
+			m_dspTraceAtCount = colon ? static_cast<uint32_t>(std::atoi(colon + 1)) : 2;
+		}
+
 		if(!_config.os.isValid())
 		{
 			NMMLOG("Hardware: no OS image");
@@ -67,8 +76,22 @@ namespace nmm
 		{
 			synthLib::TAudioInputs ins{};
 			synthLib::TAudioOutputs outs{};
+			const auto t0 = std::chrono::steady_clock::now();
+			auto tReport = t0;
 			while(!m_bootFinished)
+			{
 				processAudio(ins, outs, 8, 8);
+
+				const auto now = std::chrono::steady_clock::now();
+				if(now - tReport > std::chrono::seconds(3))
+				{
+					tReport = now;
+					auto* dsp = getMasterDSP();
+					NMMLOG("boot: still waiting for the first DSP audio frame after %lld s, 68k pc=$%06x instr=%llu, DSP booted=%d pc=$%06x instr=%llu",
+						static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - t0).count()), m_uc->getPC(), static_cast<unsigned long long>(m_uc->getInstructionCount()),
+						dsp && dsp->isBooted() ? 1 : 0, dsp && dsp->isBooted() ? dsp->dsp().getPC().var : 0, dsp && dsp->isBooted() ? static_cast<unsigned long long>(dsp->dsp().getInstructionCounter()) : 0ull);
+				}
+			}
 		}
 		m_midiOffsetCounter = 0;
 	}
@@ -231,6 +254,19 @@ namespace nmm
 			if(m_dspProfile)
 				++m_dspPcHist[dsp->dsp().getPC().var];
 
+			if(m_dspTraceFrames && --m_dspTraceFrames == 0)
+			{
+				NMMLOG("[%s] DSP instruction trace disabled", dsp->getName().c_str());
+				dsp->dsp().enableTrace(dsp56k::DSP::Disabled);
+			}
+			// NMM_DSPTRACE_AT=<frame>:<count> starts a trace at an absolute frame index
+			if(m_dspTraceAtFrame && m_essiFrameIndex == m_dspTraceAtFrame)
+			{
+				NMMLOG("[%s] DSP instruction trace enabled at frame %llu", dsp->getName().c_str(), static_cast<unsigned long long>(m_dspTraceAtFrame));
+				dsp->dsp().enableTrace(static_cast<dsp56k::DSP::TraceMode>(dsp56k::DSP::Ops | dsp56k::DSP::StackIndent));
+				m_dspTraceFrames = m_dspTraceAtCount;
+			}
+
 			onEssiFrame();
 		});
 	}
@@ -372,13 +408,26 @@ namespace nmm
 				// wait until enough output is there to avoid entering the ring mutex per frame
 				std::unique_lock uLock(m_requestedFramesAvailableMutex);
 				m_requestedFrames = requiredSize;
-				m_requestedFramesAvailableCv.wait(uLock, [&]()
+				auto tWait = std::chrono::steady_clock::now();
+				while(!m_requestedFramesAvailableCv.wait_for(uLock, std::chrono::seconds(3), [&]()
 				{
 					if(essi0.getAudioOutputs().size() < requiredSize)
 						return false;
 					m_requestedFrames = 0;
 					return true;
-				});
+				}))
+				{
+					// the DSP stopped producing frames, report where it is
+					const auto& r = dsp->dsp().regs();
+					NMMLOG("audio: DSP produced no frames for %lld s, dsp pc=$%06x sr=$%06x la=$%06x lc=$%06x sp=$%02x pending irq=%d iprc=$%06x hcr=$%02x hsr=$%02x crb0=$%06x instr=%llu, 68k pc=$%06x, outputs=%zu",
+						static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - tWait).count()),
+						r.pc.var, r.sr.var, r.la.var, r.lc.var, r.sp.var, dsp->dsp().hasPendingInterrupts() ? 1 : 0,
+						dsp->getPeriph().read(dsp56k::XIO_IPRC, static_cast<dsp56k::Instruction>(0)), dsp->hdi08().readControlRegister(), dsp->hdi08().readStatusRegister(),
+						dsp->getPeriph().getEssi0().readCRB(),
+						static_cast<unsigned long long>(dsp->dsp().getInstructionCounter()), m_uc->getPC(), essi0.getAudioOutputs().size());
+					for(uint32_t i=1; i<=r.sp.var && i<16; ++i)
+						NMMLOG("  ss[%u] = $%06x / $%06x", i, static_cast<uint32_t>(r.ss[i].var >> 24) & 0xffffff, static_cast<uint32_t>(r.ss[i].var) & 0xffffff);
+				}
 			}
 
 			for(uint32_t i=0; i<processCount; ++i)

@@ -100,7 +100,7 @@ def decode_packet(msg):
 def reassemble(logfile):
     stream = bytearray()
     for line in open(logfile, errors="replace"):
-        m = re.match(r"PC   out @(\d+):((?: [0-9a-f]{2})+)", line)
+        m = re.match(r"PC   out @([0-9.]+)s?:((?: [0-9a-f]{2})+)", line)
         if m:
             stream += bytes(int(x, 16) for x in m.group(2).split())
     msgs = []

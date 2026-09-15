@@ -5,6 +5,7 @@
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <thread>
 #include <unordered_map>
 
@@ -81,6 +82,8 @@ namespace nmm
 		uint64_t getIrqdInjected() const { return m_irqdInjected; }
 		uint64_t getIrqdMasked() const { return m_irqdMasked; }
 
+		void setDspTraceFrames(const uint32_t _frames) { m_dspTraceFrames = _frames; }
+
 		void haltDSPs();
 		void resumeDSPs();
 		bool requestingHaltDSPs() const { return m_dspHalted; }
@@ -116,7 +119,7 @@ namespace nmm
 		std::mutex m_essiFrameAddedMutex;
 		dsp56k::ConditionVariable m_essiFrameAddedCv;
 		std::mutex m_requestedFramesAvailableMutex;
-		dsp56k::ConditionVariable m_requestedFramesAvailableCv;
+		std::condition_variable m_requestedFramesAvailableCv;	// std: needs a timed wait for the stall diagnostic
 		size_t m_requestedFrames = 0;
 		bool m_dspHalted = false;
 		dsp56k::SpscSemaphoreWithCount m_haltDSPSem;
@@ -134,6 +137,9 @@ namespace nmm
 		AudioOutputs m_audioOutputs;
 		std::vector<float> m_dummyInput;
 
+		std::atomic<uint32_t> m_dspTraceFrames{0};
+		uint64_t m_dspTraceAtFrame = 0;
+		uint32_t m_dspTraceAtCount = 0;
 		std::atomic<uint64_t> m_irqdInjected{0};
 		std::atomic<uint64_t> m_irqdMasked{0};
 		bool m_dspProfile = false;

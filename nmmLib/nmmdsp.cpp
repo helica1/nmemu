@@ -2,6 +2,8 @@
 
 #include <thread>
 #include <chrono>
+#include <cstdlib>
+#include <string>
 
 #include "nmmhardware.h"
 #include "nmmlog.h"
@@ -39,7 +41,7 @@ namespace nmm
 		auto config = m_dsp.getJit().getConfig();
 		config.aguSupportBitreverse = true;
 		config.linkJitBlocks = true;
-		config.dynamicPeripheralAddressing = false;
+		config.dynamicPeripheralAddressing = true;	// the kernel loads DMA offset registers through host commands that write x:(r0)
 		config.maxInstructionsPerBlock = 0;
 		config.support16BitSCMode = true;
 		config.dynamicFastInterrupts = true;
@@ -127,6 +129,22 @@ namespace nmm
 		const uint8_t hf0 = (_icr & mc68k::Hdi08::IcrBits::Hf0) ? 1 : 0;
 		const uint8_t hf1 = (_icr & mc68k::Hdi08::IcrBits::Hf1) ? 1 : 0;
 		NMMTRACE(hdi, "[%s] host flags HF0=%u HF1=%u", m_name.c_str(), hf0, hf1);
+		const bool hf0Cleared = !hf0 && m_lastHf0;
+		m_lastHf0 = hf0 != 0;
+		const bool hf0Set = hf0 && !hf0Cleared && m_lastHf0 && false;	// placeholder, see below
+		(void)hf0Set;
+		const bool onSet = std::getenv("NMM_DSPTRACE_ON") && std::string(std::getenv("NMM_DSPTRACE_ON")) == "set";
+		const bool trigger = onSet ? (hf0 != 0 && !m_prevHf0Level) : hf0Cleared;
+		m_prevHf0Level = hf0 != 0;
+		if(trigger) ++m_hf0ClearCount;
+		const uint32_t traceNth = std::getenv("NMM_DSPTRACE_NTH") ? static_cast<uint32_t>(std::atoi(std::getenv("NMM_DSPTRACE_NTH"))) : 1;
+		if(trigger && std::getenv("NMM_DSPTRACE") && m_booted && m_hf0ClearCount == traceNth)
+		{
+			// debugging aid: trace DSP instructions from the patch handshake on, the hardware stops it after some frames
+			NMMLOG("[%s] DSP instruction trace enabled", m_name.c_str());
+			m_dsp.enableTrace(static_cast<dsp56k::DSP::TraceMode>(dsp56k::DSP::Ops | dsp56k::DSP::StackIndent | (std::getenv("NMM_DSPTRACE_REGS") ? dsp56k::DSP::Regs : 0)));
+			m_hardware.setDspTraceFrames(static_cast<uint32_t>(std::atoi(std::getenv("NMM_DSPTRACE"))));
+		}
 		// handed over as pending flags: the DSP thread applies them on its next HSR read, which avoids
 		// racing its own read-modify-writes of the status word
 		hdi08().setPendingHostFlags01((static_cast<uint32_t>(hf0) << dsp56k::HDI08::HSR_HF0) | (static_cast<uint32_t>(hf1) << dsp56k::HDI08::HSR_HF1));

@@ -15,6 +15,8 @@ set(SOURCES
 	nmmdsp.cpp nmmdsp.h
 	nmmhardware.cpp nmmhardware.h
 	nmmdevice.cpp nmmdevice.h
+	nmmmoduledb.cpp nmmmoduledb.h
+	nmmpatch.cpp nmmpatch.h
 	nmmromloader.cpp nmmromloader.h
 )
 
