@@ -13,6 +13,7 @@
 #include "ui/AppTheme.h"
 #include "ui/ThemeRegistry.h"
 #include "ui/EditorOptionsDialog.h"
+#include "model/PchFileIO.h"
 #endif
 
 namespace nmm
@@ -187,6 +188,24 @@ namespace nmm
 		return m_content && m_content->main() && m_content->main()->getConnectionManager().isConnected();
 #else
 		return false;
+#endif
+	}
+
+	std::string EditorWindow::getCurrentPatchText(std::string& _name) const
+	{
+#if NMM_EMBEDDED_EDITOR
+		if(!m_content || !m_content->main())
+			return {};
+		auto* main = m_content->main();
+		const auto* patch = main->getSlotPatch(0);
+		if(!patch)
+			return {};
+		_name = patch->getName().toStdString();
+		PchFileIO io(main->getModuleDescriptions());
+		return io.toText(*patch).toStdString();
+#else
+		(void)_name;
+		return {};
 #endif
 	}
 

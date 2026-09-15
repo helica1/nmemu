@@ -34,6 +34,9 @@ namespace nmm
 		bool isConnected() const;
 		std::string getStatus() const;
 
+		// the patch the editor currently holds in slot A as .pch text, empty if none
+		std::string getCurrentPatchText(std::string& _name) const;
+
 		static bool isAvailable();
 
 	private:

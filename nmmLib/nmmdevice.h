@@ -29,6 +29,8 @@ namespace nmm
 		uint64_t getDspClockHz() const override;
 
 		Hardware* getHardware() { return m_hardware.get(); }
+		const std::string& getFlashFile() const { return m_flashFile; }
+		bool saveFlash() const { return m_hardware && !m_flashFile.empty() && m_hardware->saveFlash(m_flashFile); }
 
 		static bool findBootRom(const std::string& _osFilename, std::vector<uint8_t>& _bootRom);
 
@@ -39,6 +41,7 @@ namespace nmm
 
 	private:
 		std::unique_ptr<Hardware> m_hardware;
+		std::string m_flashFile;
 		std::vector<uint8_t> m_midiOutBuffer;
 		std::vector<uint8_t> m_pcOutBuffer;
 		synthLib::MidiBufferParser m_midiParser;

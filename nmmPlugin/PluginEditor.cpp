@@ -35,6 +35,17 @@ namespace nmm
 			addAndMakeVisible(m_knobLabels[i]);
 		}
 
+		m_gain.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+		m_gain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 18);
+		m_gain.setRange(-24.0, 36.0, 0.1);
+		m_gain.setTextValueSuffix(" dB");
+		m_gain.setValue(m_processor.getOutputGain().get(), juce::dontSendNotification);
+		m_gain.onValueChange = [this]() { m_processor.getOutputGain().setValueNotifyingHost(m_processor.getOutputGain().convertTo0to1(static_cast<float>(m_gain.getValue()))); };
+		addAndMakeVisible(m_gain);
+		m_gainLabel.setText("Output", juce::dontSendNotification);
+		m_gainLabel.setJustificationType(juce::Justification::centred);
+		addAndMakeVisible(m_gainLabel);
+
 		m_loadPatch.onClick = [this]()
 		{
 			m_chooser = std::make_unique<juce::FileChooser>("Select a Nord Modular patch", juce::File(), "*.pch");
@@ -81,6 +92,8 @@ namespace nmm
 
 	void AudioPluginAudioProcessorEditor::timerCallback()
 	{
+		if(++m_syncCounter % 8 == 0)	// every 2 s
+			m_processor.syncPatchFromEditor();
 		const auto name = m_processor.getPatchName();
 		const auto status = m_processor.getPatchStatus();
 		m_patchLabel.setText(name.empty() ? juce::String(status) : juce::String("Patch: " + name + "  -  " + status), juce::dontSendNotification);
@@ -107,12 +120,17 @@ namespace nmm
 		area.removeFromTop(32);
 
 		auto knobRow = area.removeFromTop(120);
-		const auto w = knobRow.getWidth() / 4;
+		const auto w = knobRow.getWidth() / 5;
 		for(uint32_t i=0; i<4; ++i)
 		{
 			auto cell = knobRow.removeFromLeft(w);
 			m_knobLabels[i].setBounds(cell.removeFromTop(20));
 			m_knobs[i].setBounds(cell);
+		}
+		{
+			auto cell = knobRow.removeFromLeft(w);
+			m_gainLabel.setBounds(cell.removeFromTop(20));
+			m_gain.setBounds(cell);
 		}
 
 		area.removeFromTop(8);

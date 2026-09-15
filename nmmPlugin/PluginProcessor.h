@@ -52,6 +52,7 @@ namespace nmm
 		std::string getStatusText() const;
 		void setKnob(uint32_t _index, uint8_t _value);
 		uint8_t getKnob(uint32_t _index) const { return m_knobs[_index & 3]; }
+		juce::AudioParameterFloat& getOutputGain() { return *m_outputGain; }
 		void sendSysexFile(const juce::File& _file);
 		void sendSysex(const std::vector<uint8_t>& _bytes);
 
@@ -65,6 +66,9 @@ namespace nmm
 		void closeEditorWindow();
 		bool isEditorWindowOpen() const { return m_editorWindow != nullptr; }
 		std::string getEditorStatus() const;
+
+		// message thread, called regularly by the UI: takes over the editor's current patch as the plugin's state
+		void syncPatchFromEditor();
 
 		std::string getVirtualMidiName() const { return m_virtualMidi && m_virtualMidi->isValid() ? m_virtualMidi->getName() : std::string(); }
 
@@ -85,6 +89,7 @@ namespace nmm
 		std::vector<std::string> m_searchedDirs;
 
 		std::array<uint8_t, 4> m_knobs{0xff, 0xff, 0xff, 0xff};
+		juce::AudioParameterFloat* m_outputGain = nullptr;	// dB
 
 		std::vector<synthLib::SMidiEvent> m_midiOut;
 

@@ -74,7 +74,9 @@ namespace nmm
 		}
 		m_cyclesUntilNext = 0;
 
-		if(m_rxFull)
+		// A byte loaded while the receiver is disabled would raise no interrupt and sit in RBA
+		// forever; keep the data queued until the OS has enabled the receiver instead.
+		if(m_rxFull || !m_rxEnabled)
 			return;
 
 		std::lock_guard lock(m_mutex);

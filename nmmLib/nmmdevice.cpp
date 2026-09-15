@@ -20,7 +20,16 @@ namespace nmm
 			if(!cfg.os.isValid() && !_params.romName.empty())
 				cfg.os = RomLoader::loadOs(_params.romName);
 
-			Device::findBootRom(_params.romName, cfg.bootRom);
+			// The patch flash is persisted next to the plugin's data (customData carries no path, so
+			// homePath or the OS folder is used). With a persisted flash the OS finds its formatted
+			// patch memory and boots instantly; the OS itself is always started from the image, since
+			// the OS erases the flash sector the rack boot ROM would load it from.
+			const auto base = !_params.homePath.empty() ? _params.homePath : baseLib::filesystem::getPath(_params.romName);
+			if(!base.empty())
+				cfg.flashFile = base + (base.back() == '/' ? "" : "/") + "micromodular_flash.bin";
+
+			if(cfg.flashFile.empty() || !baseLib::filesystem::getFileSize(cfg.flashFile))
+				Device::findBootRom(_params.romName, cfg.bootRom);
 
 			cfg.dspSlots = {0};	// Micro Modular: one DSP at host port slot 0
 			return cfg;
@@ -56,6 +65,7 @@ namespace nmm
 		if(cfg.bootRom.empty())
 			NMMLOG("Device: no boot flash image found next to the OS, using HLE boot");
 
+		m_flashFile = cfg.flashFile;
 		m_hardware.reset(new Hardware(cfg));
 	}
 

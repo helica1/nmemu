@@ -23,6 +23,8 @@ namespace nmm
 		juce::Label m_status;
 		juce::Label m_patchLabel;
 		std::array<juce::Slider, 4> m_knobs;
+		juce::Slider m_gain;
+		juce::Label m_gainLabel;
 		std::array<juce::Label, 4> m_knobLabels;
 		juce::TextButton m_loadPatch{"Load patch (.pch)..."};
 		juce::TextButton m_loadSysex{"Send .syx to PC port..."};
@@ -30,6 +32,7 @@ namespace nmm
 		juce::Label m_editorStatus;
 		std::unique_ptr<juce::FileChooser> m_chooser;
 		std::string m_lastEditorStatus;
+		int m_syncCounter = 0;
 
 		JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioPluginAudioProcessorEditor)
 	};

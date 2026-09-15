@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "nmmlog.h"
+#include "nmmpatch.h"
 
 #include "dsp56kEmu/interrupts.h"
 #include "dsp56kBase/threadtools.h"
@@ -92,6 +93,40 @@ namespace nmm
 						dsp && dsp->isBooted() ? 1 : 0, dsp && dsp->isBooted() ? dsp->dsp().getPC().var : 0, dsp && dsp->isBooted() ? static_cast<unsigned long long>(dsp->dsp().getInstructionCounter()) : 0ull);
 				}
 			}
+		}
+		// Fast-forward through the OS boot: the OS needs a couple of seconds of emulated time
+		// before it accepts editor messages. Run that unpaced (a fraction of a second of wall
+		// time) so a freshly loaded plugin is ready at once.
+		// The OS is ready once it answers an editor's "I am" on the PC port.
+		if(!m_dsps.empty() && m_bootFinished)
+		{
+			synthLib::TAudioInputs ins{};
+			synthLib::TAudioOutputs outs{};
+			const auto maxFrames = static_cast<uint64_t>(g_samplerate) * 8;
+			std::vector<uint8_t> reply, out;
+			bool ready = false;
+			uint64_t nextIAm = 0;
+			while(!ready && m_essiFrameIndex < maxFrames)
+			{
+				// the OS resets its UART during init and drops what was queued, so keep asking
+				if(m_essiFrameIndex >= nextIAm)
+				{
+					m_uc->getPcPort().write(PatchSysex::iAm());
+					nextIAm = m_essiFrameIndex + g_samplerate / 4;
+				}
+				processAudio(ins, outs, 256, 0);
+				out.clear();
+				m_uc->getPcPort().read(out);
+				reply.insert(reply.end(), out.begin(), out.end());
+				for(size_t i=0; i+4<reply.size(); ++i)
+					if(reply[i] == 0xf0 && reply[i+1] == 0x33 && reply[i+2] == 0x00 && reply[i+3] == 0x06 && reply[i+4] == 0x01) { ready = true; break; }
+			}
+			// whatever else the OS sent meanwhile (voice count, lights) is dropped
+			m_uc->getMidi().read(out);
+			NMMLOG("OS %s after %.2f s of emulated time, %zu reply bytes, pc port rx=%llu tx=%llu", ready ? "ready" : "NOT ready", static_cast<double>(m_essiFrameIndex) / g_samplerate, reply.size(),
+				static_cast<unsigned long long>(m_uc->getPcPort().getRxCount()), static_cast<unsigned long long>(m_uc->getPcPort().getTxCount()));
+			for(size_t i=0; i<reply.size() && i<24; ++i) std::printf(" %02x", reply[i]);
+			if(!reply.empty()) std::printf("\n");
 		}
 		m_midiOffsetCounter = 0;
 	}

@@ -72,8 +72,9 @@ namespace nmm
 		// with a fixed offset trim added. The codec is assumed to take them right-justified as 18 bit.
 		static float dacToFloat(const dsp56k::TWord _word)
 		{
+			// the DSP limits its output at ~2^17 itself, no clamping here
 			const auto v = (static_cast<int32_t>(_word << 8) >> 8) - g_dacOffsetTrim;
-			return std::max(-1.0f, std::min(1.0f, static_cast<float>(v) * (1.0f / 131072.0f)));
+			return static_cast<float>(v) * (1.0f / 131072.0f);
 		}
 		static constexpr int32_t g_dacOffsetTrim = 341;
 
@@ -81,6 +82,9 @@ namespace nmm
 		void readMidiOut(std::vector<uint8_t>& _midiOut, std::vector<uint8_t>& _pcOut);
 
 		void setKnob(const uint32_t _index, const uint8_t _value) { m_uc->setKnob(_index, _value); }
+
+		// persists the patch flash; the UC thread keeps running, a write in flight is unlikely to matter
+		bool saveFlash(const std::string& _file) const { return m_uc->getFlash().save(_file); }
 
 		bool usesBootRom() const { return m_usesBootRom; }
 		bool osStarted() const { return m_osStarted; }

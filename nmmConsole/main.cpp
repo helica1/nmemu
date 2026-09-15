@@ -57,6 +57,7 @@ namespace
 			"           [--trace io,hdi,panel,flash,irq] [--trace-from <sec>] [--watch <hexaddr>:<hexsize>]\n"
 			"  --os      Clavia OS update .exe or descrambled 68k image\n"
 			"  --boot    512K boot flash dump; without it the OS is started directly in RAM\n"
+			"  --flash   persisted patch flash image, loaded if present and saved at the end\n"
 			"  --dsp     attach a DSP56303 to host port slot n (repeatable, Micro Modular: 0)\n"
 			"  --seconds audio seconds to render after boot (default 3)\n"
 			"  --out34   capture outputs 3/4 instead of 1/2\n"
@@ -82,7 +83,7 @@ int main(int _argc, char** _argv)
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-	std::string osFile, bootFile, dumpRam, wavFile, dumpDsp, traceFlags;
+	std::string osFile, bootFile, dumpRam, wavFile, dumpDsp, traceFlags, flashFile;
 	std::vector<uint32_t> dspSlots;
 	double seconds = 3.0;
 	double traceFrom = -1.0;
@@ -102,6 +103,7 @@ int main(int _argc, char** _argv)
 
 		if(a == "--os") osFile = next();
 		else if(a == "--boot") bootFile = next();
+		else if(a == "--flash") flashFile = next();
 		else if(a == "--dsp") dspSlots.push_back(static_cast<uint32_t>(std::stoul(next(), nullptr, 0)));
 		else if(a == "--seconds") seconds = std::stod(next());
 		else if(a == "--history") history = true;
@@ -220,6 +222,7 @@ int main(int _argc, char** _argv)
 		std::printf("boot rom: %zu bytes\n", cfg.bootRom.size());
 	}
 	cfg.dspSlots = dspSlots;
+	cfg.flashFile = flashFile;
 
 	const auto t0 = std::chrono::steady_clock::now();
 
@@ -469,6 +472,8 @@ int main(int _argc, char** _argv)
 		}
 	}
 
+	if(!flashFile.empty())
+		std::printf("flash %s: %s\n", flashFile.c_str(), uc.getFlash().save(flashFile) ? "saved" : "NOT saved");
 	hwPtr.reset();
 	std::printf("shutdown ok\n");
 	return 0;

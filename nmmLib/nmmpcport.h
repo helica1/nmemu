@@ -41,6 +41,8 @@ namespace nmm
 
 		void exec(uint32_t _deltaCycles);
 
+		// the OS enables the receiver once it is ready to talk to an editor
+		bool isReceiverEnabled() const { return m_rxEnabled; }
 		uint64_t getRxCount() const { return m_rxCount; }
 		uint64_t getTxCount() const { return m_txCount; }
 

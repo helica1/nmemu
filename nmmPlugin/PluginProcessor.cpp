@@ -21,6 +21,10 @@ namespace nmm
 			.withInput("Input", juce::AudioChannelSet::stereo(), true)
 			.withOutput("Output", juce::AudioChannelSet::stereo(), true))
 	{
+		// The DSP's full scale (where it limits) maps to 0 dBFS. A single oscillator at default
+		// level sits some 26 dB below that, so a makeup gain is applied, adjustable by the host.
+		addParameter(m_outputGain = new juce::AudioParameterFloat(juce::ParameterID("outputGain", 1), "Output Gain",
+			juce::NormalisableRange<float>(-24.0f, 36.0f, 0.1f), 18.0f, juce::AudioParameterFloatAttributes().withLabel("dB")));
 		createDevice();
 	}
 
@@ -29,6 +33,8 @@ namespace nmm
 		m_editorWindowForAudio.store(nullptr);
 		m_editorWindow.reset();
 		m_virtualMidi.reset();
+		if(m_device)
+			m_device->saveFlash();
 		m_plugin.reset();
 		m_device.reset();
 	}
@@ -98,6 +104,26 @@ namespace nmm
 		juce::MessageManager::callAsync([w]() { delete w; });
 	}
 
+	void AudioPluginAudioProcessor::syncPatchFromEditor()
+	{
+		if(!m_editorWindow || !m_editorWindow->isConnected())
+			return;
+		std::string name;
+		const auto text = m_editorWindow->getCurrentPatchText(name);
+		if(text.empty())
+			return;
+		std::lock_guard lock(m_patchMutex);
+		if(text == m_patchText)
+			return;
+		// the editor already put this into the synth, remember it without uploading it again
+		m_patchText = text;
+		m_patchName = name;
+		m_patchFile.clear();
+		m_hasPatch = true;
+		m_upload = PatchUpload();
+		m_upload.state = PatchUpload::State::Done;
+	}
+
 	std::string AudioPluginAudioProcessor::getEditorStatus() const
 	{
 		if(!EditorWindow::isAvailable())
@@ -115,6 +141,7 @@ namespace nmm
 			s += "OS: " + m_osFile + "\n";
 			s += "Boot flash: " + (m_bootRomFile.empty() ? std::string("none (HLE boot)") : m_bootRomFile) + "\n";
 			s += "DSP clock: " + std::to_string(m_device->getDspClockHz() / 1000000) + " MHz, 96 kHz\n";
+			s += "Patch flash: " + (m_device->getFlashFile().empty() ? std::string("not persisted") : m_device->getFlashFile()) + "\n";
 			if(m_virtualMidi && m_virtualMidi->isValid())
 				s += "Virtual MIDI port: '" + m_virtualMidi->getName() + "', connect the Nord Modular editor (Animatek NME, nomad) to it\n";
 			else
@@ -228,7 +255,7 @@ namespace nmm
 		case PatchUpload::State::Idle:		return "";
 		case PatchUpload::State::WaitIAm:	return "waiting for the synth (OS boot takes a few seconds)...";
 		case PatchUpload::State::Sending:	return "uploading packet " + std::to_string(m_upload.next) + "/" + std::to_string(m_upload.frames.size());
-		case PatchUpload::State::Done:		return "loaded, " + std::to_string(m_upload.acks) + " packets acknowledged" + (m_patchRerouted ? " (outputs 3/4 routed to 1/2)" : "");
+		case PatchUpload::State::Done:		return m_upload.frames.empty() ? "from the editor" : "loaded, " + std::to_string(m_upload.acks) + " packets acknowledged" + (m_patchRerouted ? " (outputs 3/4 routed to 1/2)" : "");
 		case PatchUpload::State::Failed:	return "upload failed, the synth did not answer";
 		}
 		return {};
@@ -385,6 +412,12 @@ namespace nmm
 
 		m_plugin->process(inputs, outputs, static_cast<size_t>(numSamples), bpm, ppqPos, isPlaying, hasPpqPosition);
 
+		{
+			const auto gain = juce::Decibels::decibelsToGain(m_outputGain->get());
+			for(int c=0; c<numOut; ++c)
+				_buffer.applyGain(c, 0, numSamples, gain);
+		}
+
 		m_hostSamplesProcessed += numSamples;
 
 		// MIDI OUT and PC port replies both go to the host's MIDI output
@@ -419,6 +452,10 @@ namespace nmm
 
 	void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& _destData)
 	{
+		// a project save is a good moment to persist the synth's flash (patch memory and settings) too
+		if(m_device)
+			m_device->saveFlash();
+
 		juce::ValueTree v("nmm");
 		for(uint32_t i=0; i<4; ++i)
 			v.setProperty(juce::String("knob") + juce::String(i), static_cast<int>(m_knobs[i]), nullptr);
@@ -431,6 +468,7 @@ namespace nmm
 				v.setProperty("patchText", juce::String(m_patchText), nullptr);
 			}
 		}
+		v.setProperty("outputGain", static_cast<double>(m_outputGain->get()), nullptr);
 		juce::MemoryOutputStream os(_destData, false);
 		v.writeToStream(os);
 	}
@@ -446,6 +484,8 @@ namespace nmm
 			if(v.hasProperty(id))
 				setKnob(i, static_cast<uint8_t>(static_cast<int>(v.getProperty(id))));
 		}
+		if(v.hasProperty("outputGain"))
+			*m_outputGain = static_cast<float>(static_cast<double>(v.getProperty("outputGain")));
 		if(v.hasProperty("patchText"))
 		{
 			std::string err;
