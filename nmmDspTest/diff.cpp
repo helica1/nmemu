@@ -11,6 +11,8 @@
 #include "dsp56kEmu/memory.h"
 #include "dsp56kEmu/peripherals.h"
 #include "dsp56kEmu/interrupts.h"
+#include "dsp56kEmu/jitblockchain.h"
+#include "dsp56kEmu/jitblockruntimedata.h"
 
 namespace
 {
@@ -51,6 +53,9 @@ namespace
 			config.dynamicPeripheralAddressing = true;
 			config.aguSupportBitreverse = true;
 			config.support16BitSCMode = true;
+			config.dynamicFastInterrupts = true;
+			if(std::getenv("NMM_JIT_DIAG")) config.asmjitDiagnostics = true;
+			if(std::getenv("NMM_JIT_MAXOPS")) config.maxInstructionsPerBlock = static_cast<uint32_t>(std::atoi(std::getenv("NMM_JIT_MAXOPS")));
 			dsp.getJit().setConfig(config);
 		}
 	};
@@ -68,6 +73,7 @@ namespace
 
 int runDiff(int argc, char** argv)
 {
+	const uint32_t cmpWords = std::getenv("NMM_DIFF_WORDS") ? static_cast<uint32_t>(std::strtoul(std::getenv("NMM_DIFF_WORDS"), nullptr, 0)) : 0x4000;
 	if(argc < 7) { std::printf("usage: nmmDspTest diff <p.bin> <x.txt> <y.txt> <startpc> <endpc> [maxsteps]\n"); return 1; }
 	const auto startPc = static_cast<uint32_t>(std::stoul(argv[5], nullptr, 16));
 	const auto endPc = static_cast<uint32_t>(std::stoul(argv[6], nullptr, 16));
@@ -122,7 +128,7 @@ int runDiff(int argc, char** argv)
 			}
 			int diffs = 0;
 			for (const auto area : {dsp56k::MemArea_X, dsp56k::MemArea_Y})
-				for(uint32_t a=0; a<0x4000; ++a)
+				for(uint32_t a=0; a<cmpWords; ++a)
 					if(interp.mem.get(area, a) != jit.mem.get(area, a))
 					{
 						if(diffs < 8) std::printf("  frame %d: %c:$%06x interp=$%06x jit=$%06x\n", f, area == dsp56k::MemArea_X ? 'X' : 'Y', a, interp.mem.get(area, a), jit.mem.get(area, a));
@@ -155,16 +161,31 @@ int runDiff(int argc, char** argv)
 				const bool isInterp = e == &interp;
 				e->dsp.injectInterrupt(dsp56k::Vba_IRQD);
 				int n = 0;
+				const bool trace = std::getenv("NMM_DIFF_TRACE") != nullptr && f == 0;
 				do
 				{
 					if(isInterp) e->dsp.execInterpreter(); else e->dsp.exec();
 					++n;
+					if(trace && n <= 80) std::fprintf(stderr, "  %s step %d: pc=$%06x sp=%u mode=%d\n", isInterp ? "interp" : "jit   ", n, e->dsp.getPC().var, e->dsp.regs().sp.var, static_cast<int>(e->dsp.getProcessingMode()));
+					if(trace && !isInterp && n <= 3)
+					{
+						if(const auto* chain = e->dsp.getJit().getCurrentChain())
+						{
+							if(const auto* b = chain->getBlock(e->dsp.getPC().var))
+							{
+								const auto& bi = b->getInfo();
+								std::fprintf(stderr, "    block: first=$%06x pmemsize=%u ops=%u term=%d flags=%#x branch=$%06x cond=%d\n%s\n", b->getPCFirst(), b->getPMemSize(), 0u,
+									static_cast<int>(bi.terminationReason), bi.flags, bi.branchTarget, bi.branchIsConditional ? 1 : 0, b->getDisasm().c_str());
+							}
+							else std::fprintf(stderr, "    no block at pc\n");
+						}
+					}
 				}
 				while((e->dsp.hasPendingInterrupts() || e->dsp.getPC().var != endPc) && n < maxSteps);
 			}
 			int diffs = 0;
 			for (const auto area : {dsp56k::MemArea_X, dsp56k::MemArea_Y})
-				for(uint32_t a=0; a<0x4000; ++a)
+				for(uint32_t a=0; a<cmpWords; ++a)
 					if(interp.mem.get(area, a) != jit.mem.get(area, a))
 					{
 						if(diffs < 12) std::printf("  frame %d: %c:$%06x interp=$%06x jit=$%06x\n", f, area == dsp56k::MemArea_X ? 'X' : 'Y', a, interp.mem.get(area, a), jit.mem.get(area, a));
@@ -178,6 +199,33 @@ int runDiff(int argc, char** argv)
 			if(diffs) { dumpRegs(interp, "interp"); dumpRegs(jit, "jit   "); return 1; }
 		}
 		return 0;
+	}
+
+	// NMM_DIFF_REGS="a=ff80002b000000,b=...,x0=...,x1=...,y0=...,y1=...,r3=...,r4=...,sr=..." presets registers in both engines
+	if(const auto* presets = std::getenv("NMM_DIFF_REGS"))
+	{
+		std::string str(presets);
+		size_t pos = 0;
+		while(pos < str.size())
+		{
+			const auto comma = str.find(',', pos);
+			const auto item = str.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+			pos = comma == std::string::npos ? str.size() : comma + 1;
+			const auto eq = item.find('=');
+			if(eq == std::string::npos) continue;
+			const auto name = item.substr(0, eq);
+			const auto v = std::strtoull(item.substr(eq + 1).c_str(), nullptr, 16);
+			for(auto* e : {&interp, &jit})
+			{
+				auto& r = e->dsp.regs();
+				if(name == "a") r.a.var = v; else if(name == "b") r.b.var = v;
+				else if(name == "x0") r.x.var = (r.x.var & ~0xffffffull) | (v & 0xffffff); else if(name == "x1") r.x.var = (r.x.var & 0xffffff) | ((v & 0xffffff) << 24);
+				else if(name == "y0") r.y.var = (r.y.var & ~0xffffffull) | (v & 0xffffff); else if(name == "y1") r.y.var = (r.y.var & 0xffffff) | ((v & 0xffffff) << 24);
+				else if(name == "sr") r.sr.var = static_cast<uint32_t>(v);
+				else if(name.size() == 2 && name[0] == 'r') r.r[name[1] - '0'].var = static_cast<uint32_t>(v);
+				else if(name.size() == 2 && name[0] == 'n') r.n[name[1] - '0'].var = static_cast<uint32_t>(v);
+			}
+		}
 	}
 
 	int steps = 0;
@@ -196,7 +244,13 @@ int runDiff(int argc, char** argv)
 	}
 	std::printf("interpreter: %d steps\n", steps);
 	steps = 0;
-	while(jit.dsp.getPC().var != endPc && steps < maxSteps) { jit.dsp.exec(); ++steps; }
+	const bool trace = std::getenv("NMM_DIFF_TRACE") != nullptr;
+	std::fflush(stdout);
+	while(jit.dsp.getPC().var != endPc && steps < maxSteps)
+	{
+		jit.dsp.exec(); ++steps;
+		if(trace && steps <= 60) std::fprintf(stderr, "  jit step %d: pc=$%06x sp=%u mode=%d\n", steps, jit.dsp.getPC().var, jit.dsp.regs().sp.var, static_cast<int>(jit.dsp.getProcessingMode()));
+	}
 	std::printf("jit: %d block runs\n", steps);
 
 	dumpRegs(interp, "interp");

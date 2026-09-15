@@ -289,6 +289,36 @@ namespace nmm
 			if(m_dspProfile)
 				++m_dspPcHist[dsp->dsp().getPC().var];
 
+			// NMM_ISRDUMP=<frames>: after the second host flag clear (the first patch load), print
+			// module memory and registers once per frame, for comparing the JIT against the interpreter
+			static const int isrDumpFrames = std::getenv("NMM_ISRDUMP") ? std::atoi(std::getenv("NMM_ISRDUMP")) : 0;
+			if(isrDumpFrames && dsp->getHf0ClearCount() == 2)
+			{
+				static int n = 0;
+				// NMM_DSPTRACE_ISR=<ordinal>:<frames> traces instructions from that frame ordinal on
+				static const char* traceIsr = std::getenv("NMM_DSPTRACE_ISR");
+				if(traceIsr && n == std::atoi(traceIsr))
+				{
+					const auto* colon = std::strchr(traceIsr, ':');
+					m_dspTraceFrames = colon ? static_cast<uint32_t>(std::atoi(colon + 1)) : 2;
+					dsp->dsp().enableTrace(static_cast<dsp56k::DSP::TraceMode>(dsp56k::DSP::Ops | dsp56k::DSP::StackIndent | (std::getenv("NMM_DSPTRACE_REGS") ? dsp56k::DSP::Regs : 0)));
+					std::fprintf(stderr, "ISRTRACE enabled at ordinal %d for %u frames\n", n, m_dspTraceFrames.load());
+				}
+				if(n < isrDumpFrames)
+				{
+					auto& mem = dsp->dsp().memory();
+					const auto& r = dsp->dsp().regs();
+					std::string line = "ISRDUMP " + std::to_string(n) + " pc=" + std::to_string(r.pc.var) + " x1=" + std::to_string(mem.get(dsp56k::MemArea_X, 1)) + " X:";
+					for(uint32_t a=0x5f; a<0x68; ++a) { char b[16]; std::snprintf(b, sizeof(b), " %06x", mem.get(dsp56k::MemArea_X, a)); line += b; }
+					line += " Y:";
+					for(uint32_t a=0x5f; a<0x68; ++a) { char b[16]; std::snprintf(b, sizeof(b), " %06x", mem.get(dsp56k::MemArea_Y, a)); line += b; }
+					char b[160]; std::snprintf(b, sizeof(b), " x0=%06x x1=%06x y0=%06x y1=%06x r3=%06x r4=%06x r6=%06x sp=%u sr=%06x la=%06x lc=%06x", static_cast<uint32_t>(r.x.var & 0xffffff), static_cast<uint32_t>((r.x.var >> 24) & 0xffffff), static_cast<uint32_t>(r.y.var & 0xffffff), static_cast<uint32_t>((r.y.var >> 24) & 0xffffff), r.r[3].var, r.r[4].var, r.r[6].var, r.sp.var, r.sr.var, r.la.var, r.lc.var);
+					line += b;
+					std::fprintf(stderr, "%s\n", line.c_str());
+					++n;
+				}
+			}
+
 			if(m_dspTraceFrames && --m_dspTraceFrames == 0)
 			{
 				NMMLOG("[%s] DSP instruction trace disabled", dsp->getName().c_str());

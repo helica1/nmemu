@@ -47,6 +47,14 @@ namespace nmm
 		config.maxInstructionsPerBlock = 0;
 		config.support16BitSCMode = true;
 		config.dynamicFastInterrupts = true;
+		// debugging knobs to localise JIT-only misbehaviour
+		if(std::getenv("NMM_JIT_MAXOPS")) config.maxInstructionsPerBlock = static_cast<uint32_t>(std::atoi(std::getenv("NMM_JIT_MAXOPS")));
+		if(std::getenv("NMM_JIT_NOLINK")) config.linkJitBlocks = false;
+		if(std::getenv("NMM_JIT_NOCACHE1")) config.cacheSingleOpBlocks = false;
+		if(std::getenv("NMM_JIT_NOOPT")) config.enableOptimizer = false;
+		if(std::getenv("NMM_JIT_SPLITNOPS")) config.splitOpsByNops = true;
+		if(std::getenv("NMM_JIT_NOFASTINT")) config.dynamicFastInterrupts = false;
+		if(std::getenv("NMM_JIT_MEMCPP")) config.memoryWritesCallCpp = true;
 		m_dsp.getJit().setConfig(config);
 
 		// fill P memory with a debug instruction so a jump into garbage is visible
@@ -130,7 +138,8 @@ namespace nmm
 	{
 		const uint8_t hf0 = (_icr & mc68k::Hdi08::IcrBits::Hf0) ? 1 : 0;
 		const uint8_t hf1 = (_icr & mc68k::Hdi08::IcrBits::Hf1) ? 1 : 0;
-		NMMTRACE(hdi, "[%s] host flags HF0=%u HF1=%u", m_name.c_str(), hf0, hf1);
+		NMMTRACE(hdi, "[%s] host flags HF0=%u HF1=%u (frame %llu, irqd injected %llu masked %llu, dsp pc=$%06x)", m_name.c_str(), hf0, hf1,
+			static_cast<unsigned long long>(m_hardware.getEssiFrameCount()), static_cast<unsigned long long>(m_hardware.getIrqdInjected()), static_cast<unsigned long long>(m_hardware.getIrqdMasked()), dsp().getPC().var);
 		const bool hf0Cleared = !hf0 && m_lastHf0;
 		m_lastHf0 = hf0 != 0;
 		const bool hf0Set = hf0 && !hf0Cleared && m_lastHf0 && false;	// placeholder, see below
@@ -177,7 +186,7 @@ namespace nmm
 
 	void DSP::hdiSendIrqToDSP(const uint8_t _irq)
 	{
-		NMMTRACE(hdi, "[%s] host command irq $%02x", m_name.c_str(), _irq);
+		NMMTRACE(hdi, "[%s] host command irq $%02x (frame %llu, irqd injected %llu masked %llu)", m_name.c_str(), _irq, static_cast<unsigned long long>(m_hardware.getEssiFrameCount()), static_cast<unsigned long long>(m_hardware.getIrqdInjected()), static_cast<unsigned long long>(m_hardware.getIrqdMasked()));
 
 		if(!m_booted)
 			return;

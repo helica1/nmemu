@@ -94,6 +94,10 @@ namespace nmm
 
 		static std::string nameFromFilename(const std::string& _filename);
 
+		// Writes the patch in the 3.0 text format, e.g. to convert 2.10/1.10 files for the editor
+		static std::string write30(const Patch& _patch);
+		static bool save(const std::string& _filename, const Patch& _patch);
+
 	private:
 		static bool parse30(const std::vector<std::string>& _lines, Patch& _patch, std::string& _error);
 		static bool parse210(const std::vector<std::string>& _lines, Patch& _patch, std::string& _error);

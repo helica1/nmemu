@@ -107,6 +107,16 @@ int main(int _argc, char** _argv)
 		const std::string a = _argv[i];
 		auto next = [&]() -> std::string { return i + 1 < _argc ? _argv[++i] : std::string(); };
 
+		if(a == "--convert")
+		{
+			// --convert <in.pch> <out.pch>: read any supported format, write 3.0 text
+			const auto in = next(); const auto out = next();
+			nmm::Patch patch; std::string err;
+			if(!nmm::PchFile::load(in, patch, err)) { std::printf("failed to load %s: %s\n", in.c_str(), err.c_str()); return 1; }
+			if(!nmm::PchFile::save(out, patch)) { std::printf("failed to write %s\n", out.c_str()); return 1; }
+			std::printf("wrote %s (%zu modules)\n", out.c_str(), patch.moduleCount());
+			return 0;
+		}
 		if(a == "--os") osFile = next();
 		else if(a == "--boot") bootFile = next();
 		else if(a == "--flash") flashFile = next();

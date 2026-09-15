@@ -78,6 +78,9 @@ namespace nmm
 		uint8_t m_lastHf23 = 0;
 		bool m_lastHf0 = false;
 		uint32_t m_hf0ClearCount = 0;
+	public:
+		uint32_t getHf0ClearCount() const { return m_hf0ClearCount; }
+	private:
 		bool m_prevHf0Level = false;
 	};
 }

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "nmmpatch.h"
 
 #include <algorithm>
@@ -193,6 +194,116 @@ namespace nmm
 		if(_patch.name == "Init Patch" && !_name.empty())
 			_patch.name = _name;
 		return true;
+	}
+
+	std::string PchFile::write30(const Patch& _patch)
+	{
+		std::string o;
+		auto line = [&](const std::string& _l) { o += _l; o += "\n"; };
+		auto join = [](const std::vector<int>& _v) { std::string r; for(const auto v : _v) r += std::to_string(v) + " "; return r; };
+
+		const auto& h = _patch.header;
+		line("[Header]");
+		line("Version=Nord Modular patch 3.0");
+		{
+			std::vector<int> t = {h.keyRangeMin, h.keyRangeMax, h.velRangeMin, h.velRangeMax, h.bendRange, h.portamentoTime, h.portamento ? 1 : 0,
+				h.voices, h.separatorPosition, h.octaveShift, h.voiceRetriggerPoly, h.voiceRetriggerCommon, h.unknown1, h.unknown2, h.unknown3, h.unknown4};
+			for(int c=0; c<7; ++c) t.push_back(h.cableVis[c] ? 1 : 0);
+			line(join(t));
+		}
+		line("[/Header]");
+
+		for(int sec=1; sec>=0; --sec)
+		{
+			line("[ModuleDump]");
+			line(std::to_string(sec) + " ");
+			for (const auto& m : _patch.area(sec).modules)
+				line(join({m.index, m.type, m.x, m.y}));
+			line("[/ModuleDump]");
+		}
+
+		line("[CurrentNoteDump]");
+		{
+			std::vector<int> t;
+			for (const auto& n : _patch.notes) { t.push_back(n.note); t.push_back(n.attack); t.push_back(n.release); }
+			if(t.empty()) t = {64, 0, 0};
+			line(join(t));
+		}
+		line("[/CurrentNoteDump]");
+
+		for(int sec=1; sec>=0; --sec)
+		{
+			line("[CableDump]");
+			line(std::to_string(sec) + " ");
+			for (const auto& c : _patch.area(sec).cables)
+				line(join({c.color, c.dstModule, c.dstConn, 0, c.srcModule, c.srcConn, c.srcIsOutput ? 1 : 0}));
+			line("[/CableDump]");
+		}
+
+		for(int sec=1; sec>=0; --sec)
+		{
+			line("[ParameterDump]");
+			line(std::to_string(sec) + " ");
+			for (const auto& m : _patch.area(sec).modules)
+			{
+				if(m.params.empty()) continue;
+				line(join({m.index, m.type, static_cast<int>(m.params.size())}) + join(m.params));
+			}
+			line("[/ParameterDump]");
+		}
+
+		line("[KnobMapDump]");
+		for(size_t k=0; k<_patch.knobs.size(); ++k)
+		{
+			const auto& kn = _patch.knobs[k];
+			if(kn.assigned) line(join({kn.section, kn.module, kn.param, static_cast<int>(k)}));
+		}
+		line("[/KnobMapDump]");
+
+		line("[CtrlMapDump]");
+		for (const auto& c : _patch.ctrls) line(join({c.section, c.module, c.param, c.control}));
+		line("[/CtrlMapDump]");
+
+		line("[MorphMapDump]");
+		line(join({_patch.morphValues[0], _patch.morphValues[1], _patch.morphValues[2], _patch.morphValues[3]}));
+		for (const auto& m : _patch.morphAssignments) line(join({m.section, m.module, m.param, m.morph, m.range}));
+		line("[/MorphMapDump]");
+
+		line("[KeyboardAssignment]");
+		line(join({_patch.morphKeyboard[0], _patch.morphKeyboard[1], _patch.morphKeyboard[2], _patch.morphKeyboard[3]}));
+		line("[/KeyboardAssignment]");
+
+		for(int sec=1; sec>=0; --sec)
+		{
+			line("[CustomDump]");
+			line(std::to_string(sec) + " ");
+			for (const auto& m : _patch.area(sec).modules)
+			{
+				if(m.customs.empty()) continue;
+				line(join({m.index, static_cast<int>(m.customs.size())}) + join(m.customs));
+			}
+			line("[/CustomDump]");
+		}
+
+		for(int sec=1; sec>=0; --sec)
+		{
+			line("[NameDump]");
+			line(std::to_string(sec) + " ");
+			for (const auto& m : _patch.area(sec).modules)
+				line(std::to_string(m.index) + " " + (m.name.empty() ? m.desc->name + std::to_string(m.index) : m.name));
+			line("[/NameDump]");
+		}
+		return o;
+	}
+
+	bool PchFile::save(const std::string& _filename, const Patch& _patch)
+	{
+		FILE* f = std::fopen(_filename.c_str(), "wb");
+		if(!f) return false;
+		const auto text = write30(_patch);
+		const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+		std::fclose(f);
+		return ok;
 	}
 
 	bool PchFile::parse30(const std::vector<std::string>& _lines, Patch& _patch, std::string& _error)
@@ -537,6 +648,30 @@ namespace nmm
 					if(pd.flags & 5) pv = std::max(0, pv - 1);	// output destinations and some selectors are 1-based in 2.10
 					if(pd.flags & 2) pv = pv ? 0 : 1;			// the mute switches were "on" switches in 2.10: 1 = audible
 					m.params[p] = std::max(pd.minValue, std::min(pd.maxValue, pv));
+				}
+				// 2.10 stores the trailing switch parameters of a few modules as one bit field
+				// "BP0=<n>", LSB first: sequencer record/pause/loop, the event sequencer's 32 steps,
+				// the sine bank's oscillator on switches (1 = on, like the other 2.10 mutes) and the
+				// vocoder's emphasis/monitor. They fill the parameters the "P" lines stop short of.
+				{
+					const auto bp = value(body, "BP0");
+					if(!bp.empty())
+					{
+						size_t firstMissing = m.params.size();
+						for(size_t p=0; p<m.params.size(); ++p)
+						{
+							if(value(body, "P" + std::to_string(m.desc->params[p].index)).empty()) { firstMissing = p; break; }
+						}
+						auto bits = static_cast<uint32_t>(std::stoll(bp));
+						for(size_t p=firstMissing; p<m.params.size(); ++p, bits >>= 1)
+						{
+							const auto& pd = m.desc->params[p];
+							if(pd.maxValue != 1) continue;	// only switches live in the bit field
+							int pv = static_cast<int>(bits & 1);
+							if(pd.flags & 2) pv = pv ? 0 : 1;
+							m.params[p] = pv;
+						}
+					}
 				}
 				for (const auto& l : body)
 				{
