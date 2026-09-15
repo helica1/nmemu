@@ -59,6 +59,8 @@ namespace
 			"  --boot    512K boot flash dump; without it the OS is started directly in RAM\n"
 			"  --dsp     attach a DSP56303 to host port slot n (repeatable, Micro Modular: 0)\n"
 			"  --seconds audio seconds to render after boot (default 3)\n"
+			"  --out34   capture outputs 3/4 instead of 1/2\n"
+			"  --fold34  point 2Output modules that use outputs 3/4 at 1/2 before uploading (must precede --pch)\n"
 			"  --pch <sec>:<file> loads a Clavia .pch patch (3.0 or 2.10) and uploads it via the PC port\n"
 			"  sysex files are sent to the PC port like the editor does, notes go to MIDI IN\n");
 	}
@@ -84,7 +86,7 @@ int main(int _argc, char** _argv)
 	std::vector<uint32_t> dspSlots;
 	double seconds = 3.0;
 	double traceFrom = -1.0;
-	bool history = false, midiDump = false, profile = false;
+	bool history = false, midiDump = false, profile = false, out34 = false, fold34 = false;
 
 	// scheduled MIDI: (sample frame, bytes)
 	std::vector<std::pair<uint64_t, std::vector<uint8_t>>> midiSchedule;
@@ -103,6 +105,8 @@ int main(int _argc, char** _argv)
 		else if(a == "--dsp") dspSlots.push_back(static_cast<uint32_t>(std::stoul(next(), nullptr, 0)));
 		else if(a == "--seconds") seconds = std::stod(next());
 		else if(a == "--history") history = true;
+		else if(a == "--out34") out34 = true;
+		else if(a == "--fold34") fold34 = true;
 		else if(a == "--dump-ram") dumpRam = next();
 		else if(a == "--wav") wavFile = next();
 		else if(a == "--midi-dump") midiDump = true;
@@ -155,6 +159,7 @@ int main(int _argc, char** _argv)
 			nmm::Patch patch;
 			std::string err;
 			if(!nmm::PchFile::load(file, patch, err)) { std::printf("failed to load %s: %s\n", file.c_str(), err.c_str()); return 1; }
+			if(fold34) { const auto n = patch.routeOutputsToMain(); if(n) std::printf("pch: %d output module(s) moved from 3/4 to 1/2\n", n); }
 			const auto frames = nmm::PatchSysex::upload(patch, 0);
 			size_t total = 0; for (const auto& f : frames) total += f.size();
 			std::printf("pch: '%s' %zu poly + %zu common modules, %zu + %zu cables, %zu voices -> %zu packets, %zu bytes\n", patch.name.c_str(),
@@ -246,6 +251,7 @@ int main(int _argc, char** _argv)
 	const auto totalFrames = static_cast<uint64_t>(seconds * nmm::g_samplerate);
 
 	std::vector<std::vector<int32_t>> capture(2);
+	int32_t rawPeak24 = 0; uint64_t rawWide = 0;
 	std::vector<float> outL(blockSize), outR(blockSize);
 	synthLib::TAudioInputs ins{};
 	synthLib::TAudioOutputs outs{};
@@ -294,8 +300,15 @@ int main(int _argc, char** _argv)
 		const auto& raw = hw.getAudioOutputs();
 		for(uint32_t i=0; i<blockSize; ++i)
 		{
-			capture[0].push_back(static_cast<int16_t>(raw[0][i] & 0xffff));
-			capture[1].push_back(static_cast<int16_t>(raw[1][i] & 0xffff));
+			// signed 24 bit DAC words with the offset trim removed, the DSP uses ~18 bits of them
+			for(uint32_t c=0; c<2; ++c)
+			{
+				const auto w = raw[(out34 ? 2 : 0) + c][i];
+				const auto full = (static_cast<int32_t>(w << 8) >> 8) - nmm::Hardware::g_dacOffsetTrim;
+				capture[c].push_back(full);
+				rawPeak24 = std::max(rawPeak24, std::abs(full));
+				if(full != static_cast<int16_t>(full & 0xffff)) ++rawWide;
+			}
 		}
 
 		if(midiDump)
@@ -375,11 +388,12 @@ int main(int _argc, char** _argv)
 	std::printf("essi frames: %llu, irqd injected=%llu masked=%llu\n", static_cast<unsigned long long>(hw.getEssiFrameCount()), static_cast<unsigned long long>(hw.getIrqdInjected()), static_cast<unsigned long long>(hw.getIrqdMasked()));
 
 	{
+		std::printf("DAC words: peak=%d (%.1f dBFS at 18 bit), %llu samples beyond 16 bit\n", rawPeak24, 20.0 * std::log10(rawPeak24 / 131072.0 + 1e-12), static_cast<unsigned long long>(rawWide));
 		std::printf("captured audio: %zu frames;", capture[0].size());
 		for(uint32_t c=0; c<capture.size(); ++c)
 		{
 			int32_t peak = 0; uint64_t nonzero = 0;
-			for (const auto v : capture[c]) { peak = std::max(peak, std::abs(v - 341)); if(v != 341) ++nonzero; }
+			for (const auto v : capture[c]) { peak = std::max(peak, std::abs(v)); if(v) ++nonzero; }
 			std::printf(" ch%u peak=%d nonzero=%llu", c, peak, static_cast<unsigned long long>(nonzero));
 		}
 		std::printf("\n");
@@ -401,16 +415,17 @@ int main(int _argc, char** _argv)
 				for(size_t k=0; k<win; ++k) acc += (s[start+k] - dc) * (s[start+k+lag] - dc);
 				if(acc > best) { best = acc; bestLag = lag; }
 			}
-			std::printf("  ch%u: dc=%.1f rms=%.1f (%.1f dBFS 16 bit) pitch~%.1f Hz\n", c, dc, rms, 20.0 * std::log10(rms / 32768.0 + 1e-12), bestLag ? double(nmm::g_samplerate) / double(bestLag) : 0.0);
+			std::printf("  ch%u: dc=%.1f rms=%.1f (%.1f dBFS at 18 bit) pitch~%.1f Hz\n", c, dc, rms, 20.0 * std::log10(rms / 131072.0 + 1e-12), bestLag ? double(nmm::g_samplerate) / double(bestLag) : 0.0);
 		}
 
 		if(!wavFile.empty())
 		{
+			// 18 bit DAC scale to 16 bit WAV samples
 			std::vector<std::vector<int32_t>> out(capture.size());
 			for(size_t c=0; c<capture.size(); ++c)
 			{
 				out[c].resize(capture[c].size());
-				for(size_t k=0; k<capture[c].size(); ++k) out[c][k] = capture[c][k] - 341;
+				for(size_t k=0; k<capture[c].size(); ++k) out[c][k] = std::max(-32768, std::min(32767, capture[c][k] / 4));
 			}
 			if(writeWav16(wavFile, out, nmm::g_samplerate))
 				std::printf("wrote %s\n", wavFile.c_str());

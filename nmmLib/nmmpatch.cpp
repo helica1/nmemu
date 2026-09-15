@@ -120,6 +120,25 @@ namespace nmm
 		return nullptr;
 	}
 
+	int Patch::routeOutputsToMain()
+	{
+		int changed = 0;
+		for (auto& area : areas)
+		{
+			for (auto& m : area.modules)
+			{
+				if(m.type != 4 || m.params.size() < 2)		// 2Output: level, destination, mute
+					continue;
+				if(m.params[1] != 0)
+				{
+					m.params[1] = 0;
+					++changed;
+				}
+			}
+		}
+		return changed;
+	}
+
 	// ---------------------------------------------------------------------------------------------
 	// .pch text files
 	// ---------------------------------------------------------------------------------------------

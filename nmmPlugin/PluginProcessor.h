@@ -96,6 +96,7 @@ namespace nmm
 		std::string m_patchName;
 		std::string m_patchFile;
 		bool m_hasPatch = false;
+		int m_patchRerouted = 0;
 		double m_hostSamplesProcessed = 0;
 		double m_hostSamplerate = 48000.0;
 

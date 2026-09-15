@@ -143,6 +143,9 @@ namespace nmm
 		if(!PchFile::parse(_text, patch, _error, _name))
 			return false;
 
+		// a Micro Modular has outputs 1/2 only, keep patches made for 3/4 audible
+		const auto rerouted = patch.routeOutputsToMain();
+
 		auto frames = PatchSysex::upload(patch, 0);
 
 		std::lock_guard lock(m_patchMutex);
@@ -151,6 +154,7 @@ namespace nmm
 		m_patchName = patch.name;
 		m_patchFile.clear();
 		m_hasPatch = true;
+		m_patchRerouted = rerouted;
 
 		m_upload = PatchUpload();
 		m_upload.frames = std::move(frames);
@@ -175,7 +179,7 @@ namespace nmm
 		case PatchUpload::State::Idle:		return "";
 		case PatchUpload::State::WaitIAm:	return "waiting for the synth (OS boot takes a few seconds)...";
 		case PatchUpload::State::Sending:	return "uploading packet " + std::to_string(m_upload.next) + "/" + std::to_string(m_upload.frames.size());
-		case PatchUpload::State::Done:		return "loaded, " + std::to_string(m_upload.acks) + " packets acknowledged";
+		case PatchUpload::State::Done:		return "loaded, " + std::to_string(m_upload.acks) + " packets acknowledged" + (m_patchRerouted ? " (outputs 3/4 routed to 1/2)" : "");
 		case PatchUpload::State::Failed:	return "upload failed, the synth did not answer";
 		}
 		return {};

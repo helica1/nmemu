@@ -359,8 +359,8 @@ namespace nmm
 			// nothing produces audio yet, the 68k thread runs freely and the DSP is not paced
 			if(outL) std::fill(outL, outL + _frames, 0.0f);
 			if(outR) std::fill(outR, outR + _frames, 0.0f);
-			std::fill(m_audioOutputs[0].begin(), m_audioOutputs[0].begin() + _frames, 0);
-			std::fill(m_audioOutputs[1].begin(), m_audioOutputs[1].begin() + _frames, 0);
+			for (auto& o : m_audioOutputs)
+				std::fill(o.begin(), o.begin() + _frames, 0);
 			std::this_thread::sleep_for(std::chrono::microseconds(_frames * 1000000ull / g_samplerate));
 			return;
 		}
@@ -368,8 +368,8 @@ namespace nmm
 		auto& essi0 = dsp->getPeriph().getEssi0();
 		auto& essi1 = dsp->getPeriph().getEssi1();
 
-		// audio inputs: ESSI0 slot 0 = left, ESSI1 slot 0 = right. The ADC words sit in the low 16
-		// bits like the DAC side does
+		// audio inputs, same port assignment as the outputs: ESSI1 = left, ESSI0 = right. The ADC
+		// words are assumed to sit in the low bits like the DAC side does (unverified)
 		const float* inL = _inputs[0] ? _inputs[0] : m_dummyInput.data();
 		const float* inR = _inputs[1] ? _inputs[1] : m_dummyInput.data();
 
@@ -396,8 +396,8 @@ namespace nmm
 			const auto processCount = std::min(_frames, static_cast<uint32_t>(64));
 			_frames -= processCount;
 
-			pushInputs(essi0, inL + writePos, processCount);
-			pushInputs(essi1, inR + writePos, processCount);
+			pushInputs(essi0, inR + writePos, processCount);
+			pushInputs(essi1, inL + writePos, processCount);
 
 			advanceSamples(processCount, _latency);
 
@@ -432,20 +432,23 @@ namespace nmm
 
 			for(uint32_t i=0; i<processCount; ++i)
 			{
-				dsp56k::TWord l = 0, r = 0;
+				// ESSI1 carries the left channel, ESSI0 the right one: a patch that cables only the
+				// output module's "out left" input shows up on ESSI1
+				dsp56k::TWord l = 0, r = 0, l2 = 0, r2 = 0;
 				essi0.getAudioOutputs().waitNotEmpty();
-				essi0.getAudioOutputs().pop_front([&](dsp56k::Audio::TxFrame& _tx) { if(!_tx.empty()) l = _tx[0][0]; });
+				essi0.getAudioOutputs().pop_front([&](dsp56k::Audio::TxFrame& _tx) { if(!_tx.empty()) { r = _tx[0][0]; if(_tx.size() > 1) r2 = _tx[1][0]; } });
 				essi1.getAudioOutputs().waitNotEmpty();
-				essi1.getAudioOutputs().pop_front([&](dsp56k::Audio::TxFrame& _tx) { if(!_tx.empty()) r = _tx[0][0]; });
+				essi1.getAudioOutputs().pop_front([&](dsp56k::Audio::TxFrame& _tx) { if(!_tx.empty()) { l = _tx[0][0]; if(_tx.size() > 1) l2 = _tx[1][0]; } });
 
 				m_audioOutputs[0][writePos] = l;
 				m_audioOutputs[1][writePos] = r;
+				m_audioOutputs[2][writePos] = l2;
+				m_audioOutputs[3][writePos] = r2;
 
-				// 16 bit DAC words in the low bits, with the kernel's offset trim removed
-				const auto fl = static_cast<float>(static_cast<int16_t>(l & 0xffff) - 341) / 32768.0f;
-				const auto fr = static_cast<float>(static_cast<int16_t>(r & 0xffff) - 341) / 32768.0f;
-				if(outL) outL[writePos] = fl;
-				if(outR) outR[writePos] = fr;
+				if(outL) outL[writePos] = dacToFloat(l);
+				if(outR) outR[writePos] = dacToFloat(r);
+				if(_outputs[2]) _outputs[2][writePos] = dacToFloat(l2);
+				if(_outputs[3]) _outputs[3][writePos] = dacToFloat(r2);
 				++writePos;
 			}
 		}

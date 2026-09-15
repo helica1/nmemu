@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 #include <string>
@@ -45,7 +46,7 @@ namespace nmm
 	class Hardware
 	{
 	public:
-		using AudioOutputs = std::array<std::vector<dsp56k::TWord>, 2>;
+		using AudioOutputs = std::array<std::vector<dsp56k::TWord>, 4>;	// out 1 (left, ESSI1 slot 0), out 2 (right, ESSI0 slot 0), out 3, out 4 (slot 1)
 
 		explicit Hardware(const HardwareConfig& _config);
 		~Hardware();
@@ -62,11 +63,20 @@ namespace nmm
 		// audio thread: produce _frames output frames and consume _frames input frames
 		void processAudio(const synthLib::TAudioInputs& _inputs, const synthLib::TAudioOutputs& _outputs, uint32_t _frames, uint32_t _latency);
 
-		// raw 24 bit DAC words of the last processAudio call, left = ESSI0 slot 0, right = ESSI1 slot 0
+		// raw 24 bit DAC words of the last processAudio call
 		const AudioOutputs& getAudioOutputs() const { return m_audioOutputs; }
 
 		// MIDI: sysex goes to the PC port (the editor connection), everything else to MIDI IN.
 		// The offset is in samples relative to the frames processed so far.
+		// The DSP writes signed values of up to ~18 bits into the low bits of the 24 bit DAC word,
+		// with a fixed offset trim added. The codec is assumed to take them right-justified as 18 bit.
+		static float dacToFloat(const dsp56k::TWord _word)
+		{
+			const auto v = (static_cast<int32_t>(_word << 8) >> 8) - g_dacOffsetTrim;
+			return std::max(-1.0f, std::min(1.0f, static_cast<float>(v) * (1.0f / 131072.0f)));
+		}
+		static constexpr int32_t g_dacOffsetTrim = 341;
+
 		bool sendMidi(const synthLib::SMidiEvent& _ev);
 		void readMidiOut(std::vector<uint8_t>& _midiOut, std::vector<uint8_t>& _pcOut);
 

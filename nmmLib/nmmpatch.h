@@ -77,6 +77,11 @@ namespace nmm
 		const PatchArea& area(const int _section) const { return areas[_section ? 1 : 0]; }
 
 		size_t moduleCount() const { return areas[0].modules.size() + areas[1].modules.size(); }
+
+		// A Micro Modular has outputs 1/2 only. Patches made on a full Modular that send audio to
+		// 3/4 are silent on it; this points every 2Output module at 1/2 instead. Returns how many
+		// modules were changed.
+		int routeOutputsToMain();
 	};
 
 	class PchFile
