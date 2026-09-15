@@ -3,3 +3,5 @@ build/
 *.raw
 *.bin.x.txt
 *.bin.y.txt
+syx/
+syx_poly/

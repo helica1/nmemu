@@ -14,12 +14,13 @@ set(SOURCES
 	nmmmc.cpp nmmmc.h
 	nmmdsp.cpp nmmdsp.h
 	nmmhardware.cpp nmmhardware.h
+	nmmdevice.cpp nmmdevice.h
 	nmmromloader.cpp nmmromloader.h
 )
 
 target_sources(nmmLib PRIVATE ${SOURCES})
 source_group("source" FILES ${SOURCES})
 
-target_link_libraries(nmmLib PUBLIC hardwareLib dsp56kEmu)
+target_link_libraries(nmmLib PUBLIC hardwareLib synthLib dsp56kEmu)
 
 target_include_directories(nmmLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

@@ -37,7 +37,7 @@ namespace
 
 		for(size_t f=0; f<frames; ++f)
 			for(uint32_t c=0; c<ch; ++c)
-				put16(static_cast<uint16_t>(static_cast<int16_t>(std::max(-32768, std::min(32767, _channels[c][f])))));	// DAC words are 16 bit
+				put16(static_cast<uint16_t>(static_cast<int16_t>(std::max(-32768, std::min(32767, _channels[c][f])))));
 
 		FILE* fp = std::fopen(_filename.c_str(), "wb");
 		if(!fp)
@@ -50,12 +50,27 @@ namespace
 	void usage()
 	{
 		std::printf(
-			"nmmConsole --os <osfile> [--boot <bootflash.bin>] [--dsp <slot>]... [--steps <n>]\n"
-			"           [--trace io,hdi,panel,flash] [--history] [--dump-ram <file>] [--press <offset>=<value>]\n"
-			"  --os     Clavia OS update .exe or descrambled 68k image\n"
-			"  --boot   512K boot flash dump; without it the OS is started directly in RAM\n"
-			"  --dsp    attach a DSP56303 to host port slot n (repeatable)\n"
-			"  --steps  number of 68k instructions to run (default 20 million)\n");
+			"nmmConsole --os <osfile> [--boot <bootflash.bin>] [--dsp <slot>]... [--seconds <s>]\n"
+			"           [--note <sec>:<note>] [--syx <sec>:<file>] [--knob <i>=<v>] [--press <off>=<v>]\n"
+			"           [--wav <file>] [--midi-dump] [--profile] [--history] [--dump-ram <f>] [--dump-dsp <f>]\n"
+			"           [--trace io,hdi,panel,flash,irq] [--trace-from <sec>] [--watch <hexaddr>:<hexsize>]\n"
+			"  --os      Clavia OS update .exe or descrambled 68k image\n"
+			"  --boot    512K boot flash dump; without it the OS is started directly in RAM\n"
+			"  --dsp     attach a DSP56303 to host port slot n (repeatable, Micro Modular: 0)\n"
+			"  --seconds audio seconds to render after boot (default 3)\n"
+			"  sysex files are sent to the PC port like the editor does, notes go to MIDI IN\n");
+	}
+
+	std::vector<uint8_t> readFile(const std::string& _file)
+	{
+		std::vector<uint8_t> bytes;
+		if(FILE* f = std::fopen(_file.c_str(), "rb"))
+		{
+			uint8_t buf[4096]; size_t n;
+			while((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+			std::fclose(f);
+		}
+		return bytes;
 	}
 }
 
@@ -63,19 +78,18 @@ int main(int _argc, char** _argv)
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-	std::string osFile, bootFile, dumpRam, wavFile;
+	std::string osFile, bootFile, dumpRam, wavFile, dumpDsp, traceFlags;
 	std::vector<uint32_t> dspSlots;
-	uint64_t steps = 20'000'000;
-	bool history = false;
-	bool midiDump = false;
-	bool profile = false;
-	uint64_t traceFrom = 0;
-	std::string traceFlags, dumpDsp, rawAudio;
-	std::unordered_map<uint32_t, uint64_t> pcHist;
-	// scheduled MIDI: (instruction index, bytes)
+	double seconds = 3.0;
+	double traceFrom = -1.0;
+	bool history = false, midiDump = false, profile = false;
+
+	// scheduled MIDI: (sample frame, bytes)
 	std::vector<std::pair<uint64_t, std::vector<uint8_t>>> midiSchedule;
 	std::vector<std::pair<uint32_t,uint8_t>> panelInputs;
 	std::vector<std::pair<uint32_t,uint8_t>> knobs;
+
+	auto toFrames = [](const std::string& _s) { return static_cast<uint64_t>(std::stod(_s) * nmm::g_samplerate); };
 
 	for(int i=1; i<_argc; ++i)
 	{
@@ -85,18 +99,17 @@ int main(int _argc, char** _argv)
 		if(a == "--os") osFile = next();
 		else if(a == "--boot") bootFile = next();
 		else if(a == "--dsp") dspSlots.push_back(static_cast<uint32_t>(std::stoul(next(), nullptr, 0)));
-		else if(a == "--steps") steps = std::stoull(next());
+		else if(a == "--seconds") seconds = std::stod(next());
 		else if(a == "--history") history = true;
 		else if(a == "--dump-ram") dumpRam = next();
 		else if(a == "--wav") wavFile = next();
 		else if(a == "--midi-dump") midiDump = true;
 		else if(a == "--profile") profile = true;
-		else if(a == "--trace-from") traceFrom = std::stoull(next());
+		else if(a == "--trace-from") traceFrom = std::stod(next());
 		else if(a == "--dump-dsp") dumpDsp = next();
-		else if(a == "--raw-audio") rawAudio = next();
+		else if(a == "--trace") traceFlags = next();
 		else if(a == "--knob")
 		{
-			// --knob <index>=<value 0-255>
 			const auto s = next();
 			const auto eq = s.find('=');
 			if(eq != std::string::npos)
@@ -104,7 +117,6 @@ int main(int _argc, char** _argv)
 		}
 		else if(a == "--watch")
 		{
-			// --watch <addr>:<size>, hex; enabled together with --trace-from
 			const auto s = next();
 			const auto colon = s.find(':');
 			nmm::Trace::watchAddr = static_cast<uint32_t>(std::stoul(s.substr(0, colon), nullptr, 16));
@@ -112,28 +124,22 @@ int main(int _argc, char** _argv)
 		}
 		else if(a == "--note")
 		{
-			// --note <instruction>:<note>  sends note on, and note off 2M instructions later
+			// --note <sec>:<note>  note on, note off one second later
 			const auto s = next();
 			const auto colon = s.find(':');
-			const uint64_t at = std::stoull(s.substr(0, colon));
+			const auto at = toFrames(s.substr(0, colon));
 			const auto note = static_cast<uint8_t>(std::stoul(s.substr(colon + 1)));
 			midiSchedule.emplace_back(at, std::vector<uint8_t>{0x90, note, 0x64});
-			midiSchedule.emplace_back(at + 2'000'000, std::vector<uint8_t>{0x80, note, 0x00});
+			midiSchedule.emplace_back(at + nmm::g_samplerate, std::vector<uint8_t>{0x80, note, 0x00});
 		}
 		else if(a == "--syx")
 		{
-			// --syx <instruction>:<file>  sends the raw bytes of a .syx file
+			// --syx <sec>:<file>  sends the raw bytes of a .syx file to the PC port
 			const auto s = next();
 			const auto colon = s.find(':');
-			const uint64_t at = std::stoull(s.substr(0, colon));
+			const auto at = toFrames(s.substr(0, colon));
 			const auto file = s.substr(colon + 1);
-			std::vector<uint8_t> bytes;
-			if(FILE* f = std::fopen(file.c_str(), "rb"))
-			{
-				uint8_t buf[4096]; size_t n;
-				while((n = std::fread(buf, 1, sizeof(buf), f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
-				std::fclose(f);
-			}
+			auto bytes = readFile(file);
 			if(bytes.empty()) { std::printf("failed to read %s\n", file.c_str()); return 1; }
 			midiSchedule.emplace_back(at, std::move(bytes));
 		}
@@ -144,7 +150,6 @@ int main(int _argc, char** _argv)
 			if(eq != std::string::npos)
 				panelInputs.emplace_back(static_cast<uint32_t>(std::stoul(s.substr(0,eq), nullptr, 0)), static_cast<uint8_t>(std::stoul(s.substr(eq+1), nullptr, 0)));
 		}
-		else if(a == "--trace") traceFlags = next();
 		else { usage(); return 1; }
 	}
 
@@ -153,6 +158,8 @@ int main(int _argc, char** _argv)
 		usage();
 		return 1;
 	}
+
+	std::sort(midiSchedule.begin(), midiSchedule.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
 
 	const auto watchSizeRequested = nmm::Trace::watchSize;
 	nmm::Trace::watchSize = 0;
@@ -166,7 +173,7 @@ int main(int _argc, char** _argv)
 		if(s.find("flash") != std::string::npos) nmm::Trace::flash = true;
 		if(s.find("irq") != std::string::npos) nmm::Trace::irq = true;
 	};
-	if(traceFrom == 0)
+	if(traceFrom < 0)
 		applyTrace();
 
 	nmm::HardwareConfig cfg;
@@ -189,7 +196,15 @@ int main(int _argc, char** _argv)
 	}
 	cfg.dspSlots = dspSlots;
 
-	nmm::Hardware hw(cfg);
+	const auto t0 = std::chrono::steady_clock::now();
+
+	// knobs must be set before construction, the OS reads them during init
+	std::unique_ptr<nmm::Hardware> hwPtr;
+	{
+		// construction boots the machine and blocks until the DSP produces audio
+		hwPtr.reset(new nmm::Hardware(cfg));
+	}
+	auto& hw = *hwPtr;
 	if(!hw.isValid())
 		return 1;
 
@@ -202,85 +217,102 @@ int main(int _argc, char** _argv)
 	for (const auto& [idx, val] : knobs)
 		uc.setKnob(idx, val);
 
-	const auto t0 = std::chrono::steady_clock::now();
+	const auto tBoot = std::chrono::steady_clock::now();
+	std::printf("boot finished in %lld ms (68k instructions=%llu, os started=%d)\n",
+		static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(tBoot - t0).count()),
+		static_cast<unsigned long long>(uc.getInstructionCount()), hw.osStarted() ? 1 : 0);
 
+	constexpr uint32_t blockSize = 256;
+	const auto totalFrames = static_cast<uint64_t>(seconds * nmm::g_samplerate);
+
+	std::vector<std::vector<int32_t>> capture(2);
+	std::vector<float> outL(blockSize), outR(blockSize);
+	synthLib::TAudioInputs ins{};
+	synthLib::TAudioOutputs outs{};
+	outs[0] = outL.data();
+	outs[1] = outR.data();
+
+	uint64_t frame = 0;
 	uint64_t lastReport = 0;
-	for(uint64_t i=0; i<steps; ++i)
+	bool traceApplied = traceFrom < 0;
+
+	while(frame < totalFrames)
 	{
-		hw.stepUC();
-
-		if(profile && (i & 63) == 0)
-			++pcHist[uc.getPC()];
-
-		if(traceFrom && i == traceFrom)
-			applyTrace();
-
-		if((i & 4095) == 0)
+		if(!traceApplied && frame >= static_cast<uint64_t>(traceFrom * nmm::g_samplerate))
 		{
-			hw.serviceAudio();
+			applyTrace();
+			traceApplied = true;
+		}
 
-			// ~4096 instructions at ~21 MHz / 3.3 cycles per instruction is roughly 650 us, call it 64 samples
-			hw.getMidi().process(64);
+		// schedule MIDI that falls into this block
+		while(!midiSchedule.empty() && midiSchedule.front().first < frame + blockSize)
+		{
+			auto& [at, bytes] = midiSchedule.front();
+			const bool sysex = !bytes.empty() && bytes[0] == 0xf0;
+			std::printf("%s in  @%.3fs:", sysex ? "PC  " : "MIDI", static_cast<double>(at) / nmm::g_samplerate);
+			for (size_t k=0; k<bytes.size() && k<24; ++k) std::printf(" %02x", bytes[k]);
+			if(bytes.size() > 24) std::printf(" ... (%zu bytes)", bytes.size());
+			std::printf("\n");
 
-			for (auto it = midiSchedule.begin(); it != midiSchedule.end();)
+			synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host);
+			ev.offset = static_cast<uint32_t>(at);
+			if(sysex)
+				ev.sysex.assign(bytes.begin(), bytes.end());
+			else
 			{
-				if(it->first <= i)
-				{
-					// sysex goes to the PC port like the editor would, everything else to MIDI IN
-					const bool sysex = !it->second.empty() && it->second[0] == 0xf0;
-					std::printf("%s in  @%llu:", sysex ? "PC  " : "MIDI", static_cast<unsigned long long>(i));
-					for (size_t k=0; k<it->second.size() && k<24; ++k) std::printf(" %02x", it->second[k]);
-					if(it->second.size() > 24) std::printf(" ... (%zu bytes)", it->second.size());
-					std::printf("\n");
-					if(sysex)
-						hw.getPcPort().write(it->second);
-					else
-						hw.getMidi().write(it->second);
-					it = midiSchedule.erase(it);
-				}
-				else
-					++it;
+				ev.a = bytes[0];
+				ev.b = bytes.size() > 1 ? bytes[1] : 0;
+				ev.c = bytes.size() > 2 ? bytes[2] : 0;
 			}
+			hw.sendMidi(ev);
+			midiSchedule.erase(midiSchedule.begin());
+		}
 
-			if(midiDump)
+		hw.processAudio(ins, outs, blockSize, 0);
+		frame += blockSize;
+
+		const auto& raw = hw.getAudioOutputs();
+		for(uint32_t i=0; i<blockSize; ++i)
+		{
+			capture[0].push_back(static_cast<int16_t>(raw[0][i] & 0xffff));
+			capture[1].push_back(static_cast<int16_t>(raw[1][i] & 0xffff));
+		}
+
+		if(midiDump)
+		{
+			std::vector<uint8_t> midiOut, pcOut;
+			hw.readMidiOut(midiOut, pcOut);
+			if(!midiOut.empty())
 			{
-				std::vector<uint8_t> out;
-				hw.getMidi().read(out);
-				if(!out.empty())
-				{
-					std::printf("MIDI out @%llu:", static_cast<unsigned long long>(i));
-					for (const auto b : out) std::printf(" %02x", b);
-					std::printf("\n");
-				}
-				hw.getPcPort().read(out);
-				if(!out.empty())
-				{
-					std::printf("PC   out @%llu:", static_cast<unsigned long long>(i));
-					for (const auto b : out) std::printf(" %02x", b);
-					std::printf("\n");
-				}
+				std::printf("MIDI out @%.3fs:", static_cast<double>(frame) / nmm::g_samplerate);
+				for (const auto b : midiOut) std::printf(" %02x", b);
+				std::printf("\n");
+			}
+			if(!pcOut.empty())
+			{
+				std::printf("PC   out @%.3fs:", static_cast<double>(frame) / nmm::g_samplerate);
+				for (const auto b : pcOut) std::printf(" %02x", b);
+				std::printf("\n");
 			}
 		}
 
-		if(i - lastReport >= 1'000'000)
+		if(frame - lastReport >= nmm::g_samplerate)
 		{
-			lastReport = i;
-			std::printf("... %llu instructions, pc=$%06x\n", static_cast<unsigned long long>(i), uc.getPC());
+			lastReport = frame;
+			const auto now = std::chrono::steady_clock::now();
+			std::printf("... %.1f s rendered in %.2f s wall, 68k pc=$%06x instr=%llu\n", static_cast<double>(frame) / nmm::g_samplerate,
+				std::chrono::duration<double>(now - tBoot).count(), uc.getPC(), static_cast<unsigned long long>(uc.getInstructionCount()));
 		}
 	}
 
 	const auto t1 = std::chrono::steady_clock::now();
-	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - tBoot).count();
 
-	std::printf("\n=== done: %llu instructions in %lld ms, final pc=$%06x, 68k cycles=%llu, os started=%d\n",
-		static_cast<unsigned long long>(steps), static_cast<long long>(ms), uc.getPC(), static_cast<unsigned long long>(uc.getCycles()), hw.osStarted() ? 1 : 0);
+	std::printf("\n=== done: %.2f s audio in %lld ms (%.2fx realtime), 68k instructions=%llu cycles=%llu pc=$%06x\n",
+		seconds, static_cast<long long>(ms), seconds * 1000.0 / std::max<double>(1.0, static_cast<double>(ms)),
+		static_cast<unsigned long long>(uc.getInstructionCount()), static_cast<unsigned long long>(uc.getCycles()), uc.getPC());
 
 	std::printf("sr=$%04x irqs=%llu sci tx writes=%llu\n", uc.getSR(), static_cast<unsigned long long>(uc.getIrqCount()), static_cast<unsigned long long>(uc.getSciTxWrites()));
-	std::printf("registers: ");
-	for(uint32_t r=0; r<8; ++r) std::printf("d%u=$%08x ", r, uc.getDReg(r));
-	std::printf("\n           ");
-	for(uint32_t r=0; r<8; ++r) std::printf("a%u=$%08x ", r, uc.getAReg(r));
-	std::printf("\n");
 
 	std::printf("host port slot access counts:");
 	const auto& counts = uc.getDspSlots().accessCounts();
@@ -300,7 +332,6 @@ int main(int _argc, char** _argv)
 
 		if(!dumpDsp.empty() && d == 0)
 		{
-			// P memory as big endian 24 bit words, one per 4 bytes
 			auto& mem = dsp.dsp().memory();
 			std::vector<uint8_t> out;
 			for(uint32_t p=0; p<0x10000; ++p)
@@ -309,7 +340,6 @@ int main(int _argc, char** _argv)
 				out.push_back((w >> 16) & 0xff); out.push_back((w >> 8) & 0xff); out.push_back(w & 0xff);
 			}
 			if(FILE* f = std::fopen(dumpDsp.c_str(), "wb")) { std::fwrite(out.data(), 1, out.size(), f); std::fclose(f); std::printf("wrote %s (P:0-$ffff)\n", dumpDsp.c_str()); }
-			// X and Y memory as text, one word per line
 			for (const auto area : {dsp56k::MemArea_X, dsp56k::MemArea_Y})
 			{
 				const auto name = dumpDsp + (area == dsp56k::MemArea_X ? ".x.txt" : ".y.txt");
@@ -325,59 +355,51 @@ int main(int _argc, char** _argv)
 	std::printf("essi frames: %llu, irqd injected=%llu masked=%llu\n", static_cast<unsigned long long>(hw.getEssiFrameCount()), static_cast<unsigned long long>(hw.getIrqdInjected()), static_cast<unsigned long long>(hw.getIrqdMasked()));
 
 	{
-		const auto& cap = hw.getCapture();
-		std::printf("captured audio: %zu frames;", cap[0].size());
-		for(uint32_t c=0; c<cap.size(); ++c)
+		std::printf("captured audio: %zu frames;", capture[0].size());
+		for(uint32_t c=0; c<capture.size(); ++c)
 		{
 			int32_t peak = 0; uint64_t nonzero = 0;
-			for (const auto v : cap[c]) { peak = std::max(peak, std::abs(v)); if(v) ++nonzero; }
+			for (const auto v : capture[c]) { peak = std::max(peak, std::abs(v - 341)); if(v != 341) ++nonzero; }
 			std::printf(" ch%u peak=%d nonzero=%llu", c, peak, static_cast<unsigned long long>(nonzero));
 		}
 		std::printf("\n");
-		// per channel: dc, rms, zero crossing frequency over the last 2 seconds
-		for(uint32_t c=0; c<cap.size(); ++c)
+		// per channel: dc, rms, autocorrelation pitch over the last second
+		for(uint32_t c=0; c<capture.size(); ++c)
 		{
-			const auto& s = cap[c];
+			const auto& s = capture[c];
 			if(s.size() < 4096) continue;
-			const size_t n = std::min<size_t>(s.size(), nmm::g_samplerate * 2);
+			const size_t n = std::min<size_t>(s.size(), nmm::g_samplerate);
 			const size_t start = s.size() - n;
 			double sum = 0, sq = 0; for(size_t k=start; k<s.size(); ++k) { sum += s[k]; sq += double(s[k]) * s[k]; }
-			const double dc = sum / double(n), rms = std::sqrt(sq / double(n));
-			size_t zc = 0; for(size_t k=start+1; k<s.size(); ++k) if((s[k-1] - dc < 0) != (s[k] - dc < 0)) ++zc;
-			std::printf("  ch%u: dc=%.1f rms=%.1f (%.1f dBFS) zero-crossing freq=%.1f Hz\n", c, dc, rms, 20.0 * std::log10(rms / 8388608.0 + 1e-12), double(zc) / 2.0 / (double(n) / nmm::g_samplerate));
+			const double dc = sum / double(n), rms = std::sqrt(sq / double(n) - dc * dc);
+			// autocorrelation over 20 Hz .. 4 kHz
+			double best = -1; size_t bestLag = 0;
+			const size_t win = std::min<size_t>(n / 2, 8192);
+			for(size_t lag = nmm::g_samplerate / 4000; lag < nmm::g_samplerate / 20 && lag < n - win; ++lag)
+			{
+				double acc = 0;
+				for(size_t k=0; k<win; ++k) acc += (s[start+k] - dc) * (s[start+k+lag] - dc);
+				if(acc > best) { best = acc; bestLag = lag; }
+			}
+			std::printf("  ch%u: dc=%.1f rms=%.1f (%.1f dBFS 16 bit) pitch~%.1f Hz\n", c, dc, rms, 20.0 * std::log10(rms / 32768.0 + 1e-12), bestLag ? double(nmm::g_samplerate) / double(bestLag) : 0.0);
 		}
 
 		if(!wavFile.empty())
 		{
-			// remove the DAC offset trim and write the 16 bit DAC words as they are
-			std::vector<std::vector<int32_t>> out(cap.size());
-			for(size_t c=0; c<cap.size(); ++c)
+			std::vector<std::vector<int32_t>> out(capture.size());
+			for(size_t c=0; c<capture.size(); ++c)
 			{
-				out[c].resize(cap[c].size());
-				for(size_t k=0; k<cap[c].size(); ++k) out[c][k] = cap[c][k] - 341;
+				out[c].resize(capture[c].size());
+				for(size_t k=0; k<capture[c].size(); ++k) out[c][k] = capture[c][k] - 341;
 			}
 			if(writeWav16(wavFile, out, nmm::g_samplerate))
 				std::printf("wrote %s\n", wavFile.c_str());
-		}
-		if(!rawAudio.empty() && !cap[0].empty())
-		{
-			if(FILE* f = std::fopen(rawAudio.c_str(), "wb")) { std::fwrite(cap[0].data(), sizeof(int32_t), cap[0].size(), f); std::fclose(f); std::printf("wrote %s (ch0 int32)\n", rawAudio.c_str()); }
 		}
 	}
 
 	std::printf("panel latches:");
 	for(uint32_t l=0; l<16; ++l) std::printf(" %02x", uc.getPanel().getLatch(l));
 	std::printf("\n");
-
-	if(profile)
-	{
-		std::vector<std::pair<uint32_t,uint64_t>> v(pcHist.begin(), pcHist.end());
-		std::sort(v.begin(), v.end(), [](auto& a, auto& b){ return a.second > b.second; });
-		uint64_t total = 0; for (auto& e : v) total += e.second;
-		std::printf("pc profile (top 40 of %zu, %llu samples):\n", v.size(), static_cast<unsigned long long>(total));
-		for(size_t k=0; k<v.size() && k<40; ++k)
-			std::printf("  $%06x %5.2f%%\n", v[k].first, 100.0 * static_cast<double>(v[k].second) / static_cast<double>(total));
-	}
 
 	if(profile && hw.getDspCount())
 	{
@@ -412,5 +434,7 @@ int main(int _argc, char** _argv)
 		}
 	}
 
+	hwPtr.reset();
+	std::printf("shutdown ok\n");
 	return 0;
 }
