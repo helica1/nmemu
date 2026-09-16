@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Render every .pch under a folder to MP3 (or WAV), a few seconds each, in parallel.
 
-  tools/renderall.py <patchdir> <outdir> [--seconds 10] [--jobs 8] [--wav] [--notes 36,48] [--limit N]
+  tools/renderall.py <patchdir> <outdir> [--seconds 9] [--jobs 8] [--wav] [--notes 36,48] [--limit N]
 
 Each patch gets the folder structure of the archive mirrored under <outdir>. Two notes are played,
-by default C2 and C3 (two and one octaves below middle C); patches without a Keyboard module ignore
-them. Files that already exist are skipped, so the run can be resumed. A CSV next to the output
-lists every patch with its peak level and whether it stayed silent.
+by default C2 and C3 (two and one octaves below middle C), 2.5 s each at 1 s and 4 s; patches
+without a Keyboard module ignore them. The synth needs about 0.8 s to take a patch, so leading
+silence is trimmed from every file. Files that already exist are skipped, so the run can be
+resumed. A CSV next to the output lists every patch with its peak level and whether it stayed silent.
 """
 import csv, os, re, subprocess, sys, tempfile, time
 from multiprocessing import Pool
@@ -23,10 +24,10 @@ def render(job):
     if os.path.exists(dst):
         return (src, "exists", -1)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmpwav = dst if wav else tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    tmpwav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
     cmd = [CONSOLE, "--os", OS_FILE, "--dsp", "0", "--seconds", str(seconds), "--fold34", "--wav", tmpwav, "--pch", "0.2:" + src]
     for i, n in enumerate(notes):
-        cmd += ["--note", "%.1f:%d" % (0.5 + i * 3.0, n)]
+        cmd += ["--note", "%.1f:%d:2.5" % (1.0 + i * 3.0, n)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=600)
     except subprocess.TimeoutExpired:
@@ -35,11 +36,13 @@ def render(job):
     peak = max(int(m.group(1)), int(m.group(2))) if m else -1
     if "failed to load" in r.stdout or not os.path.exists(tmpwav):
         return (src, "load failed", peak)
-    if not wav:
-        e = subprocess.run([FFMPEG, "-loglevel", "error", "-y", "-i", tmpwav, "-codec:a", "libmp3lame", "-q:a", "4", dst], capture_output=True)
-        os.unlink(tmpwav)
-        if e.returncode != 0:
-            return (src, "encode failed", peak)
+    # drop the leading silence (patch load, note-on delay), then encode
+    trim = ["-af", "silenceremove=start_periods=1:start_threshold=-70dB:start_silence=0.05"]
+    codec = [] if wav else ["-codec:a", "libmp3lame", "-q:a", "4"]
+    e = subprocess.run([FFMPEG, "-loglevel", "error", "-y", "-i", tmpwav] + trim + codec + [dst], capture_output=True)
+    os.unlink(tmpwav)
+    if e.returncode != 0:
+        return (src, "encode failed", peak)
     return (src, "silent" if peak < 200 else "ok", peak)
 
 
@@ -51,7 +54,7 @@ def main():
     opts = sys.argv[1:]
     def opt(name, default):
         return opts[opts.index(name) + 1] if name in opts else default
-    seconds = float(opt("--seconds", "10"))
+    seconds = float(opt("--seconds", "9"))
     jobs = int(opt("--jobs", str(max(1, (os.cpu_count() or 4) // 2))))
     notes = [int(x) for x in opt("--notes", "36,48").split(",")]
     limit = int(opt("--limit", "0"))

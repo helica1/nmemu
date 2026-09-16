@@ -150,13 +150,15 @@ int main(int _argc, char** _argv)
 		}
 		else if(a == "--note")
 		{
-			// --note <sec>:<note>  note on, note off one second later
+			// --note <sec>:<note>[:<duration sec>]  note on, note off after the duration (default one second)
 			const auto s = next();
 			const auto colon = s.find(':');
+			const auto colon2 = s.find(':', colon + 1);
 			const auto at = toFrames(s.substr(0, colon));
-			const auto note = static_cast<uint8_t>(std::stoul(s.substr(colon + 1)));
+			const auto note = static_cast<uint8_t>(std::stoul(s.substr(colon + 1, colon2 == std::string::npos ? std::string::npos : colon2 - colon - 1)));
+			const auto duration = colon2 == std::string::npos ? nmm::g_samplerate : toFrames(s.substr(colon2 + 1));
 			midiSchedule.emplace_back(at, std::vector<uint8_t>{0x90, note, 0x64});
-			midiSchedule.emplace_back(at + nmm::g_samplerate, std::vector<uint8_t>{0x80, note, 0x00});
+			midiSchedule.emplace_back(at + duration, std::vector<uint8_t>{0x80, note, 0x00});
 		}
 		else if(a == "--syx")
 		{
