@@ -106,6 +106,56 @@ The emulation relies on fixes in the forked `dsp56300` core (branch `nord-modula
 the gearmulator fork's `nord-modular` branch references. Release `v0.1.0` of nmemu builds against
 the `nmemu-v0.1.0` tags of both forks and of the `Animatek-NME` fork (branch `nmemu-host`).
 
+## Building from source (Windows)
+
+Tested on Windows 11 x64 with Visual Studio 2022 Build Tools (MSVC 19.4x, the CMake and Ninja that come with them).
+Same two checkouts as on macOS, side by side:
+
+```
+git clone --recursive https://github.com/helica1/nmemu
+git clone --branch nord-modular --recursive https://github.com/helica1/gearmulator
+```
+
+From a shell with the x64 compiler environment (`vcvars64.bat`, or the "x64 Native Tools Command Prompt"):
+
+```
+call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cd nmemu
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DNMEMU_BUILD_STANDALONE=ON
+cmake --build build --target nmmConsole nmmPlugin_VST3 nmmPlugin_Standalone
+```
+
+| target | lands in |
+|---|---|
+| console renderer | `build\nmmConsole\nmmConsole.exe` |
+| VST3 | `build\nmmPlugin\nmmPlugin_artefacts\Release\VST3\NordMicroModular.vst3` |
+| standalone (with the editor) | `build\nmmPlugin\nmmPlugin_artefacts\Release\Standalone\NordMicroModular.exe` |
+
+Copy the `.vst3` folder into `C:\Program Files\Common Files\VST3\` (needs admin rights) or the per-user
+`%LOCALAPPDATA%\Programs\Common\VST3\`. AU is macOS only; CLAP builds with `nmmPlugin_CLAP` as on macOS.
+
+**Where the OS file goes on Windows.** Use the *Micro* Modular updater, `Nord Micro Modular OS v3.03b Update.exe`
+from Clavia's legacy download page (inside `Nord Micro Modular OS v3.03b Update.zip`; the plugin finds any name).
+The plain "Nord Modular OS v3.03b Update" is the full Nord Modular's OS: it is recognised (`product='Modular'`) but
+does not run on the emulated Micro Modular (no patch is accepted). The updater is only read, never run. Put it into
+`%APPDATA%\nmemu\` (most reliable), `Documents\nmemu\` (note: when Windows keeps Documents in OneDrive, that is
+`OneDrive\Documents\nmemu`), next to `NordMicroModular.exe`, or a folder named by `NMEMU_ROM_DIR`. The console
+renderer takes the file with `--os`; on Windows, give it Windows paths (`--pch 0.2:C:\patches\x.pch` is fine).
+
+On Windows the plugin also exposes the front panel knobs as host parameters (CMake option `NMEMU_HOST_KNOBS`, on by
+default on Windows only, so the macOS parameter list is unchanged): parameter 0 is Output Gain as before, then
+Master Level, Knob 1, Knob 2, Knob 3 (0-255, like the panel's ADC). A knob is sent to the synth only when the host
+changes it, and not while a patch upload is in progress, so a patch's stored values stay until a knob is turned.
+Knob 1-3 are the patch's knob assignments 1-3 (`[KnobMapDump]` knob index 0-2). Measured on the panel ADC: channel 3
+is the master level, channel 2 knob 1, channel 1 knob 2, channel 0 knob 3; the plugin's own window labels channel 0
+as "Master Level", so its sliders are in reverse order (left as it is here, it is shared with macOS).
+
+The embedded Animatek NME editor works on Windows as on macOS (it talks to the emulator in-process). The virtual MIDI
+port for external editors is not available on Windows (no virtual ports without a driver such as loopMIDI).
+
+Measured on a 24-core Windows PC (one instance, simple patch): about 6x real time, boot about 0.5 s, reported latency
+512 samples at 48 kHz, A4 = 440.0 Hz.
+
 ## What works and what does not (v0.1.0)
 
 - One Micro Modular: one DSP, four voices, outputs 1/2, MIDI in, PC port. The full Nord Modular
@@ -115,7 +165,7 @@ the `nmemu-v0.1.0` tags of both forks and of the `Animatek-NME` fork (branch `nm
   archive patches, not against hardware recordings.
 - No audio input into the synth yet, so vocoder and effect patches stay silent.
 - Knob and MIDI controller assignments are not shown in the plugin's own UI, use the editor.
-- Windows and Linux builds are untested.
+- Windows builds as described above; Linux is untested.
 
 ## Layout
 

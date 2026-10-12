@@ -25,6 +25,21 @@ namespace nmm
 		// level sits some 26 dB below that, so a makeup gain is applied, adjustable by the host.
 		addParameter(m_outputGain = new juce::AudioParameterFloat(juce::ParameterID("outputGain", 1), "Output Gain",
 			juce::NormalisableRange<float>(-24.0f, 36.0f, 0.1f), 18.0f, juce::AudioParameterFloatAttributes().withLabel("dB")));
+#if NMM_HOST_KNOBS
+		// the front panel knobs as host parameters (after Output Gain, so its index stays 0). A knob value is
+		// only sent to the synth when the host changes it, like a hardware knob that is turned: until then the
+		// patch's stored values stay in place. The OS reads the ADC channels in reverse: channel 3 is the master
+		// level, channel 2 the patch's knob 1 (KnobMapDump index 0), channel 1 knob 2, channel 0 knob 3.
+		{
+			static const char* ids[4] = {"masterLevel", "knob1", "knob2", "knob3"};
+			static const char* names[4] = {"Master Level", "Knob 1", "Knob 2", "Knob 3"};
+			for(uint32_t i=0; i<4; ++i)
+			{
+				addParameter(m_knobParams[i] = new juce::AudioParameterInt(juce::ParameterID(ids[i], 1), names[i], 0, 255, 255));
+				m_lastKnobParams[i] = 255;
+			}
+		}
+#endif
 		createDevice();
 	}
 
@@ -327,6 +342,16 @@ namespace nmm
 		default:
 			break;
 		}
+#if NMM_HOST_KNOBS
+		// knob moves wait until the patch is in: a patch upload sets every parameter to its stored value
+		{
+			const bool busy = u.state == PatchUpload::State::WaitIAm || u.state == PatchUpload::State::Sending ||
+				(u.state == PatchUpload::State::Done && u.acks < static_cast<int>(u.frames.size()) && now < u.nextSendSample);
+			if(busy)
+				m_knobsReleaseSample = now + 0.1 * m_hostSamplerate;
+			m_knobsHeld = busy || now < m_knobsReleaseSample;
+		}
+#endif
 		(void)_numHostSamples;
 	}
 
@@ -366,6 +391,18 @@ namespace nmm
 		}
 
 		servicePatchUpload(numSamples);
+
+#if NMM_HOST_KNOBS
+		for(uint32_t i=0; i<4 && !m_knobsHeld; ++i)
+		{
+			const auto v = m_knobParams[i]->get();
+			if(v != m_lastKnobParams[i])
+			{
+				m_lastKnobParams[i] = v;
+				setKnob(3 - i, static_cast<uint8_t>(v));
+			}
+		}
+#endif
 
 		synthLib::TAudioInputs inputs{};
 		synthLib::TAudioOutputs outputs{};
