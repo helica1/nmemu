@@ -51,6 +51,19 @@ target_compile_definitions(nmmPlugin PUBLIC
 	JUCE_USE_FLAC=0
 )
 
+# The front panel knobs as host parameters, so a host can automate them (OC8NT maps its knobs to plug-in
+# parameters). On by default on Windows only, so the macOS plugin keeps its parameter list unchanged.
+if(WIN32)
+	option(NMEMU_HOST_KNOBS "Expose master level and knobs 1-3 as host parameters" ON)
+else()
+	option(NMEMU_HOST_KNOBS "Expose master level and knobs 1-3 as host parameters" OFF)
+endif()
+if(NMEMU_HOST_KNOBS)
+	target_compile_definitions(nmmPlugin PRIVATE NMM_HOST_KNOBS=1)
+else()
+	target_compile_definitions(nmmPlugin PRIVATE NMM_HOST_KNOBS=0)
+endif()
+
 if(NMEMU_EDITOR)
 	target_compile_definitions(nmmPlugin PRIVATE NMM_EMBEDDED_EDITOR=1)
 	target_link_libraries(nmmPlugin PRIVATE nmmEditor)

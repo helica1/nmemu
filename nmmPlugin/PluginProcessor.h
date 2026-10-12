@@ -90,6 +90,12 @@ namespace nmm
 
 		std::array<uint8_t, 4> m_knobs{0xff, 0xff, 0xff, 0xff};
 		juce::AudioParameterFloat* m_outputGain = nullptr;	// dB
+#if NMM_HOST_KNOBS
+		std::array<juce::AudioParameterInt*, 4> m_knobParams{};	// host parameters for master level and knobs 1-3
+		std::array<int, 4> m_lastKnobParams{};
+		bool m_knobsHeld = false;			// audio thread: a patch upload is in progress
+		double m_knobsReleaseSample = 0;
+#endif
 
 		std::vector<synthLib::SMidiEvent> m_midiOut;
 
